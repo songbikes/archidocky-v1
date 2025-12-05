@@ -663,28 +663,266 @@ async function getZoneWithFallback(address: string) {
 - 設計修改建議生成
 - 法規更新通知
 
-#### RFI 智能處理:
+#### RFI 智能處理與回覆系統:
 
-**問題彙整**
+**A. 多格式 RFI 解析引擎**
 
-- RFI 郵件自動分析和分類
-- 問題優先級評估
-- 相似問題歷史查詢
-- 回覆模板智能生成
+**支援的輸入格式**:
+- Email 內文（Gmail/Outlook API）
+- Word 文檔（.docx）
+- PDF 文件（文字型 + 掃描型 OCR）
+- 截圖/圖片（Vision AI + OCR）
 
-**文檔自動化**
+**智能內容清理**:
+```typescript
+// 核心原則
+{
+  "preserveOriginal": true,  // 保留原文（含拼音/文法錯誤）
+  "formatCleaning": true,    // 清理格式
+  "duplicateDetection": true, // 偵測重複問題
+  "categoryTagging": true,   // 問題分類
+  "extractMedia": true       // 提取圖片和連結
+}
+```
 
-- 根據公司格式自動產生回覆文檔
-- Council 表格自動填寫
-- 項目信息智能匹配
-- 工作流程自動化
+**AI 處理流程**:
+1. 接收多種格式的 RFI 文件
+2. 提取問題並保留原始措辭
+3. 格式化排版、編號
+4. 偵測並標記重複問題
+5. 自動分類（設計、合規、文件等）
+6. 提取內嵌圖片和網址
+7. 生成結構化線上文檔
+
+**技術棧**:
+- Word 解析: mammoth.js
+- PDF 解析: pdf-parse + pdf.js
+- OCR: Google Document AI / Tesseract.js
+- Vision AI: Google Gemini 2.0 Flash
+- 文件處理: LangChain
+
+**B. Cover Letter 生成系統（主要產出）**
+
+**A4 直式專業文檔特性**:
+- 公司抬頭（Logo + 聯絡資訊）
+- 收件人資訊（Processor + Council）
+- 項目參考資訊（地址、Consent Number）
+- 逐題回答格式
+  - 保留原始問題（含錯誤）
+  - 格式化回答
+  - 內嵌圖片附件
+- 專業結尾與簽名
+- 即時 PDF 預覽
+- 一鍵下載
+
+**生成技術**:
+```typescript
+// 使用 React-PDF 或 PDFKit
+interface CoverLetterData {
+  company: CompanyHeader;
+  processor: ProcessorInfo;
+  project: ProjectDetails;
+  responses: QuestionResponse[];
+  signature: SignatureBlock;
+}
+
+// 輸出: 專業排版的 A4 PDF
+generateCoverLetter(data) → PDF Buffer
+```
+
+**用途**:
+- 下載後上傳到 Council Portal
+- 列印存檔
+- 郵寄給 Council（如需要）
+
+**C. 線上回覆編輯器**
+
+**功能特性**:
+- 雙面板佈局（編輯器 + PDF 預覽）
+- 每個問題獨立回答區
+- Rich Text Editor（格式化文字）
+- 圖片上傳與管理
+- AI 輔助回答建議
+- 草稿自動保存
+- 即時 PDF 預覽更新
+
+**用戶體驗**:
+```tsx
+<RFICoverLetterEditor>
+  <LeftPanel>
+    <CompanyHeaderEditor />
+    {questions.map(q => (
+      <QuestionBlock>
+        <OriginalQuestion readOnly>{q.text}</OriginalQuestion>
+        <ResponseEditor placeholder="Enter response..." />
+        <ImageUploader />
+      </QuestionBlock>
+    ))}
+    <SignatureBlock />
+  </LeftPanel>
+  
+  <RightPanel>
+    <LivePDFPreview />
+  </RightPanel>
+  
+  <Actions>
+    <DownloadPDF />
+    <SaveDraft />
+    <SendNotifications />
+  </Actions>
+</RFICoverLetterEditor>
+```
+
+**D. 通知系統（輔助功能）**
+
+**簡化的團隊通知**:
+- 僅限平台內的專案成員
+- 站內通知 ���
+- Email 提醒（可選）
+- 簡單訊息："RFI 回覆已提交"
+
+**通知流程**:
+```typescript
+// 1. 選擇要通知的團隊成員
+selectRecipients(projectMembers)
+
+// 2. 發送站內通知
+createNotification({
+  type: "rfi_response",
+  message: "RFI response submitted to council",
+  link: "/projects/{id}/rfis/{rfiId}"
+})
+
+// 3. 可選：Email 提醒
+sendEmail({
+  subject: "RFI Response Submitted",
+  body: simpleTemplate(message, projectLink)
+})
+```
+
+**通知介面**:
+- 頂部導航欄通知鈴鐺
+- 未讀數量徽章
+- 下拉式通知列表
+- 點擊跳轉到相關 RFI
+
+**E. 未來擴展：Council Portal 整合**
+
+**願景**:
+- 成為業界統一的 RFI 回覆平台
+- 直接整合 Council Portal API
+- 一鍵提交到 Council 系統
+- 自動追蹤回覆狀態
+
+**技術準備**:
+```typescript
+// 模組化設計，為未來整合做準備
+async function submitToCouncilPortal(
+  coverLetterPDF: Buffer,
+  council: CouncilType
+) {
+  switch (council) {
+    case 'auckland':
+      // 未來：直接 API 上傳
+      return await aucklandPortalAPI.submit(coverLetterPDF);
+    default:
+      // 當前：提供下載 + 手動上傳指引
+      return {
+        downloadUrl: generateURL(coverLetterPDF),
+        portalUrl: getCouncilPortalURL(council),
+        instructions: getUploadInstructions(council)
+      };
+  }
+}
+```
+
+**資料庫結構**:
+```typescript
+// convex/schema.ts
+rfis: defineTable({
+  projectId: v.id("projects"),
+  
+  // 原始輸入
+  originalFormat: v.string(), // 'email' | 'word' | 'pdf' | 'image'
+  rawContent: v.string(),
+  uploadedFiles: v.array(v.id("_storage")),
+  
+  // Processor 資訊
+  processorName: v.string(),
+  processorEmail: v.optional(v.string()),
+  council: v.string(),
+  receivedDate: v.number(),
+  
+  // AI 解析後的問題
+  questions: v.array(v.object({
+    id: v.string(),
+    number: v.number(),
+    originalText: v.string(),      // 保留原文（含錯誤）
+    category: v.optional(v.string()), // AI 分類
+    isDuplicate: v.optional(v.boolean()),
+    duplicateOf: v.optional(v.number()),
+    attachedImages: v.optional(v.array(v.string())),
+    attachedLinks: v.optional(v.array(v.string())),
+  })),
+  
+  // 用戶回答
+  responses: v.optional(v.array(v.object({
+    questionId: v.string(),
+    responseText: v.string(),
+    responseImages: v.optional(v.array(v.id("_storage"))),
+    respondedAt: v.number(),
+    respondedBy: v.id("users"),
+  }))),
+  
+  // Cover Letter
+  coverLetter: v.optional(v.object({
+    pdfStorageId: v.id("_storage"),
+    generatedAt: v.number(),
+    downloadCount: v.number(),
+  })),
+  
+  // 狀態追蹤
+  status: v.string(), // 'pending' | 'in-progress' | 'completed' | 'submitted'
+  submittedToCouncil: v.optional(v.boolean()),
+  submittedAt: v.optional(v.number()),
+  
+  // 通知記錄
+  notificationsSent: v.optional(v.array(v.object({
+    sentAt: v.number(),
+    recipients: v.array(v.id("users")),
+  }))),
+})
+```
+
+**工作流程總覽**:
+```
+1. 用戶上傳 RFI（多種格式）
+      ↓
+2. AI 解析並清理格式（保留原文）
+      ↓
+3. 顯示結構化線上文檔
+      ↓
+4. 用戶填寫回答 + 上傳圖片
+      ↓
+5. 即時生成 Cover Letter PDF 預覽
+      ↓
+6. 下載 PDF（用於 Council Portal 上傳）
+      ↓
+7. 發送通知給團隊成員（可選）
+      ↓
+8. 記錄到專案歷史
+      ↓
+9. 未來：直接提交到 Council Portal
+```
 
 **技術整合**:
-
-- AI 模型: Google Gemini API
-- 文檔處理: LangChain
+- AI 模型: Google Gemini 2.0 Flash
+- 文檔處理: mammoth.js, pdf-parse, LangChain
 - OCR: Google Document AI
-- 自然語言處理: 自訂 AI 工作流
+- PDF 生成: React-PDF / PDFKit
+- Rich Text Editor: Tiptap / Lexical
+- Email: Resend / SendGrid
+- 通知: Convex Real-time + Email
 
 ### 4. 法規知識庫系統 (Regulatory Knowledge Base)
 
