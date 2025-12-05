@@ -50,7 +50,7 @@
 **技術考量**:
 
 - 檔案儲存: 混合儲存策略 (見下方檔案儲存架構)
-- 圖像處理: PDF.js 或 React-PDF
+- 圖像處理: React-PDF (Phase 1-3) → Nutrient SDK (Phase 4+)
 - 搜尋: 全文搜尋 + 標籤系統
 
 ### 檔案儲存架構 (Hybrid Storage Strategy)
@@ -180,6 +180,77 @@ async function restoreVersion(versionId: string) {
 
 **目標**: 提供完整的線上 PDF 編輯和協作體驗
 
+#### PDF 整合方案 - 階段性策略:
+
+**Phase 1-3 (MVP): React-PDF**
+
+**選擇原因**:
+- ✅ **零成本** - 完全開源 (MIT License)
+- ✅ **快速整合** - 1-2 天完成基本功能
+- ✅ **足夠 MVP** - 涵蓋檢視、註解、文字選取需求
+- ✅ **社群活躍** - 10.7k GitHub stars，持續維護
+- ✅ **Next.js 友善** - 官方範例完整
+
+**技術規格**:
+```bash
+npm install react-pdf pdfjs-dist
+```
+
+**核心功能支援**:
+- ✅ 高性能 PDF 渲染 (WebAssembly)
+- ✅ 文字層與註解層
+- ✅ 縮放、旋轉、搜尋
+- ✅ 多頁面導航
+- ✅ 離線支援
+- ⚠️ 基礎註解顯示（無編輯）
+- ❌ 即時協作（需 Convex 自行實作）
+- ❌ 文字編輯
+- ❌ 電子簽名
+
+**Phase 4+ (進階功能): 評估 Nutrient SDK**
+
+**升級時機** (當以下任一條件成立):
+1. 付費用戶達到 **50+ 公司**
+2. 用戶強烈要求「即時協作編輯」
+3. 需符合 Council 數位簽名規範
+4. AI 功能需深度整合 PDF 工作流
+
+**Nutrient SDK 優勢**:
+- ✅ **完整 PDF 生命週期** - 檢視、編輯、簽名、比對
+- ✅ **即時協作** - 內建 Instant Collaboration
+- ✅ **17 種註解類型** - 專業標註工具
+- ✅ **文字編輯** - 直接修改 PDF 內容
+- ✅ **電子+數位簽名** - Council 合規
+- ✅ **文件比對** - 版本差異分析
+- ✅ **AI 整合** - 內建 AI Assistant
+- ✅ **企業級認證** - SOC 2 Type 2
+- ✅ **PDFium 引擎** - Chrome/Edge 同款
+- 💰 **商業授權** - 需聯繫報價
+
+**技術規格**:
+```bash
+npm install pspdfkit
+# 或使用 Cloud API (免維護基礎設施)
+```
+
+**遷移策略**:
+- React-PDF 與 Nutrient 都是 React 組件
+- 遷移成本低，主要是 API 差異
+- 可逐步遷移（先核心功能，再擴展）
+
+**成本效益分析**:
+```
+React-PDF (Phase 1-3):
+- 授權費用: $0
+- 開發時間: 2-3 天
+- 限制: 無進階編輯/協作
+
+Nutrient (Phase 4+):
+- 授權費用: 待洽談（估 $500-2000/月）
+- 節省開發: 6-12 個月工程時間
+- ROI: 官方數據顯示 63% 工程成本降低
+```
+
 #### 核心功能:
 
 **PDF 瀏覽與管理**
@@ -214,10 +285,126 @@ async function restoreVersion(versionId: string) {
 
 **技術實現**:
 
-- PDF 引擎: PDF.js 或 PSPDFKit
-- 即時協作: Convex Real-time
-- 檔案處理: PDF-lib
-- 畫布操作: Fabric.js 或 Konva.js
+**Phase 1-3 實作 (React-PDF)**:
+```typescript
+// components/PDFViewer.tsx
+'use client';
+import { Document, Page } from 'react-pdf';
+import { pdfjs } from 'react-pdf';
+import 'react-pdf/dist/Page/AnnotationLayer.css';
+import 'react-pdf/dist/Page/TextLayer.css';
+
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url,
+).toString();
+
+export function PDFViewer({ fileUrl }: { fileUrl: string }) {
+  const [numPages, setNumPages] = useState<number>();
+  const [pageNumber, setPageNumber] = useState(1);
+  
+  return (
+    <Document 
+      file={fileUrl}
+      onLoadSuccess={({ numPages }) => setNumPages(numPages)}
+      options={{
+        cMapUrl: '/cmaps/',
+        standardFontDataUrl: '/standard_fonts/',
+      }}
+    >
+      {Array.from(new Array(numPages), (el, index) => (
+        <Page 
+          key={`page_${index + 1}`} 
+          pageNumber={index + 1}
+          renderTextLayer={true}
+          renderAnnotationLayer={true}
+          scale={scale}
+        />
+      ))}
+    </Document>
+  );
+}
+```
+
+**協作功能 (Convex 實作)**:
+```typescript
+// convex/annotations.ts
+export const addAnnotation = mutation({
+  args: {
+    pdfId: v.id("pdfs"),
+    pageNumber: v.number(),
+    position: v.object({ x: v.number(), y: v.number() }),
+    content: v.string(),
+    type: v.string(), // 'comment', 'highlight', 'drawing'
+  },
+  handler: async (ctx, args) => {
+    const annotationId = await ctx.db.insert("annotations", {
+      ...args,
+      createdAt: Date.now(),
+      createdBy: ctx.auth.getUserIdentity()?.subject,
+    });
+    
+    // 即時通知其他協作者
+    await ctx.db.insert("notifications", {
+      type: "new_annotation",
+      targetUsers: await getProjectMembers(args.pdfId),
+      data: { annotationId, pageNumber: args.pageNumber },
+    });
+    
+    return annotationId;
+  },
+});
+
+// 即時訂閱註解更新
+export const subscribeAnnotations = query({
+  args: { pdfId: v.id("pdfs") },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("annotations")
+      .filter(q => q.eq(q.field("pdfId"), args.pdfId))
+      .collect();
+  },
+});
+```
+
+**Phase 4+ 升級 (Nutrient)**:
+```typescript
+// components/PDFViewerPro.tsx
+import PSPDFKit from 'pspdfkit';
+
+export async function PDFViewerPro({ fileUrl }: { fileUrl: string }) {
+  useEffect(() => {
+    PSPDFKit.load({
+      container: "#pspdfkit",
+      document: fileUrl,
+      licenseKey: process.env.NEXT_PUBLIC_PSPDFKIT_KEY,
+      
+      // 即時協作
+      instant: true,
+      instantJSON: {
+        documentId: documentId,
+        serverUrl: "wss://your-instant-server.com",
+      },
+      
+      // 自訂工具列
+      toolbarItems: [
+        ...PSPDFKit.defaultToolbarItems,
+        { type: "custom", title: "AI Assistant", onPress: openAIPanel }
+      ],
+      
+      // 電子簽名
+      signatureOptions: {
+        enabled: true,
+        appearance: "council-compliant"
+      }
+    });
+  }, []);
+}
+```
+
+**檔案處理**: PDF-lib (兩階段通用)
+**畫布操作**: Fabric.js 或 Konva.js (Phase 1-3)
+**即時協作**: Convex Real-time (Phase 1-3) / Nutrient Instant (Phase 4+)
 
 ### 2.5. 智能地址分析與法規查詢系統 (Smart Address Analysis & Compliance Lookup)
 
@@ -696,7 +883,7 @@ async function getZoneWithFallback(address: string) {
 
 **技術棧**:
 - Word 解析: mammoth.js
-- PDF 解析: pdf-parse + pdf.js
+- PDF 解析: pdf-parse + React-PDF (Phase 1-3) / Nutrient Document API (Phase 4+)
 - OCR: Google Document AI / Tesseract.js
 - Vision AI: Google Gemini 2.0 Flash
 - 文件處理: LangChain
@@ -717,7 +904,7 @@ async function getZoneWithFallback(address: string) {
 
 **生成技術**:
 ```typescript
-// 使用 React-PDF 或 PDFKit
+// 使用 React-PDF (@react-pdf/renderer) 或 PDFKit
 interface CoverLetterData {
   company: CompanyHeader;
   processor: ProcessorInfo;
@@ -726,7 +913,8 @@ interface CoverLetterData {
   signature: SignatureBlock;
 }
 
-// 輸出: 專業排版的 A4 PDF
+// Phase 1-3: @react-pdf/renderer (生成 PDF)
+// Phase 4+: 可選用 Nutrient Document Generation API
 generateCoverLetter(data) → PDF Buffer
 ```
 
@@ -777,7 +965,7 @@ generateCoverLetter(data) → PDF Buffer
 
 **簡化的團隊通知**:
 - 僅限平台內的專案成員
-- 站內通知 ���
+- 站內通知 ���
 - Email 提醒（可選）
 - 簡單訊息："RFI 回覆已提交"
 
@@ -919,7 +1107,8 @@ rfis: defineTable({
 - AI 模型: Google Gemini 2.0 Flash
 - 文檔處理: mammoth.js, pdf-parse, LangChain
 - OCR: Google Document AI
-- PDF 生成: React-PDF / PDFKit
+- PDF 生成: @react-pdf/renderer (Phase 1-3) / Nutrient Generation API (Phase 4+)
+- PDF 檢視: React-PDF (Phase 1-3) / Nutrient SDK (Phase 4+)
 - Rich Text Editor: Tiptap / Lexical
 - Email: Resend / SendGrid
 - 通知: Convex Real-time + Email
@@ -1426,15 +1615,15 @@ module.exports = {
 ### Phase 2: 核心功能 (8-10 週)
 
 - [ ] 公司圖庫管理系統
-- [ ] 基礎 PDF 檢視功能
+- [ ] React-PDF 整合與基礎 PDF 檢視功能
 - [ ] 檔案上傳下載系統
 - [ ] 用戶角色權限管理
 - [ ] 基礎搜尋功能
 
 ### Phase 3: 協作功能 (6-8 週)
 
-- [ ] PDF 標註系統
-- [ ] 即時協作功能
+- [ ] PDF 標註系統 (基於 Convex + Canvas)
+- [ ] 即時協作功能 (Convex Real-time)
 - [ ] 版本控制系統
 - [ ] 通知系統
 - [ ] 評論討論功能
@@ -1446,6 +1635,7 @@ module.exports = {
 - [ ] RFI 智能處理
 - [ ] 法規知識庫建立
 - [ ] AI 問答系統
+- [ ] **評估 Nutrient SDK 升級** (基於用戶反饋和需求)
 
 ### Phase 5: 社群功能 (4-6 週)
 
