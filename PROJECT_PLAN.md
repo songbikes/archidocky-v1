@@ -219,6 +219,423 @@ async function restoreVersion(versionId: string) {
 - 檔案處理: PDF-lib
 - 畫布操作: Fabric.js 或 Konva.js
 
+### 2.5. 智能地址分析與法規查詢系統 (Smart Address Analysis & Compliance Lookup)
+
+**目標**: 根據項目地址自動獲取 Council 分區、BRANZ 氣候數據及相關建築法規
+
+#### 核心功能：
+
+**A. Council 分區自動查詢 (Automated Zoning Lookup)**
+
+**支援的 Council（Phase 1-3 逐步擴展）**:
+
+- Auckland Council - Unitary Plan
+- Wellington City Council - District Plan
+- Christchurch City Council - District Plan
+- Queenstown Lakes District Council
+- Hamilton City Council
+- 其他主要城市 Council...
+
+**查詢流程**:
+
+```
+用戶輸入項目地址
+    ↓
+地址標準化 & 驗證（NZ Post API / Google Maps）
+    ↓
+地址 → GPS 座標轉換
+    ↓
+反向工程 Council GIS 系統
+    ├─ Auckland: Unitary Plan Viewer API
+    ├─ Wellington: District Plan GIS
+    ├─ Christchurch: Planning Maps API
+    └─ 其他: 各 Council ArcGIS/MapServer
+    ↓
+獲取分區資訊
+    ├─ Zone Code (如: MHU, CCZ, RS)
+    ├─ Zone Name (如: Mixed Housing Urban)
+    ├─ Overlay Zones (如: Heritage, Volcanic)
+    ├─ Precincts (如: Special Character)
+    └─ Height Limits
+    ↓
+自動顯示在項目儀表板
+```
+
+**技術實現 - 反向工程方法**:
+
+**1. Auckland Council 範例**:
+
+```typescript
+// lib/council/auckland-zone-lookup.ts
+
+interface AucklandZoneResult {
+  zoneCode: string; // "MHU"
+  zoneName: string; // "Mixed Housing Urban Zone"
+  overlays: string[]; // ["Historic Heritage", "Flood"]
+  heightLimit: number; // 11 metres
+  precinct?: string;
+  coordinates: { lat: number; lng: number };
+}
+
+async function getAucklandZone(address: string): Promise<AucklandZoneResult> {
+  // Step 1: 地址 → 座標（Auckland Council Geocoder）
+  const geocodeResponse = await fetch(
+    "https://maps.aucklandcouncil.govt.nz/arcgis/rest/services/Locators/ACAddress/GeocodeServer/findAddressCandidates",
+    {
+      method: "POST",
+      body: new URLSearchParams({
+        SingleLine: address,
+        f: "json",
+        outSR: "2193", // NZTM座標系統
+        maxLocations: "1",
+      }),
+    }
+  );
+
+  const { candidates } = await geocodeResponse.json();
+  const location = candidates[0].location; // { x, y } in NZTM
+
+  // Step 2: 座標 → Zone 資訊（Unitary Plan Viewer API）
+  const zoneResponse = await fetch(
+    "https://unitaryplan.aucklandcouncil.govt.nz/arcgis/rest/services/PlanViewer/MapServer/identify?" +
+      new URLSearchParams({
+        geometry: `${location.x},${location.y}`,
+        geometryType: "esriGeometryPoint",
+        layers: "all:20,all:21,all:22", // Zones, Height, Overlays
+        tolerance: "1",
+        mapExtent: `${location.x - 100},${location.y - 100},${location.x + 100},${location.y + 100}`,
+        imageDisplay: "1024,768,96",
+        returnGeometry: "false",
+        f: "json",
+      })
+  );
+
+  const zoneData = await zoneResponse.json();
+
+  // Step 3: 解析並返回結果
+  return parseAucklandZoneData(zoneData.results);
+}
+
+// 座標系統轉換 (NZTM → WGS84)
+function convertNZTMtoLatLng(x: number, y: number) {
+  const proj4 = require("proj4");
+  const nztm =
+    "+proj=tmerc +lat_0=0 +lon_0=173 +k=0.9996 +x_0=1600000 +y_0=10000000 +ellps=GRS80";
+  const wgs84 = "+proj=longlat +datum=WGS84";
+  const [lng, lat] = proj4(nztm, wgs84, [x, y]);
+  return { lat, lng };
+}
+```
+
+**2. 多 Council 統一介面**:
+
+```typescript
+// lib/council/unified-zone-lookup.ts
+
+interface UnifiedZoneResult {
+  council: string;
+  zoneCode: string;
+  zoneName: string;
+  restrictions: {
+    heightLimit?: number;
+    siteCoverage?: number;
+    setbacks?: { front: number; side: number; rear: number };
+    buildingTypes?: string[];
+  };
+  overlays: string[];
+  sourceUrl: string;
+  lastUpdated: Date;
+}
+
+async function getZoneByAddress(address: string): Promise<UnifiedZoneResult> {
+  // 1. 識別 Council
+  const council = await identifyCouncil(address);
+
+  // 2. 路由到對應的查詢函數
+  switch (council) {
+    case "auckland":
+      return await getAucklandZone(address);
+    case "wellington":
+      return await getWellingtonZone(address);
+    case "christchurch":
+      return await getChristchurchZone(address);
+    default:
+      return await getFallbackZone(address); // Manual lookup
+  }
+}
+```
+
+**B. BRANZ 氣候與環境數據自動查詢**
+
+**BRANZ 數據源**:
+
+- Erosion Zone (侵蝕區)
+- Earthquake Zone (地震區)
+- Wind Zone (風區)
+- Wind Region (風域)
+- Lee Zone (背風區)
+- Climate Zone (氣候區)
+- Snow Load Zone (雪載區)
+- Rainfall Zone (降雨區)
+
+**查詢流程**:
+
+```typescript
+// lib/branz/climate-data-lookup.ts
+
+interface BRANZClimateData {
+  address: string;
+  coordinates: { lat: number; lng: number };
+  zones: {
+    erosion: "Very High" | "High" | "Medium" | "Low";
+    earthquake: "Zone A" | "Zone B" | "Zone C";
+    wind: "W1" | "W2" | "W3" | "W4";
+    windRegion: "A" | "B" | "C";
+    leeZone: boolean;
+    climate: "Zone 1" | "Zone 2" | "Zone 3";
+    snowLoad?: number; // kPa
+    rainfall?: number; // mm/year
+  };
+  buildingCodeReferences: {
+    NZS3604: string[]; // 相關條款
+    E2AS1: string[]; // 外部防水標準
+    B1VM1: string[]; // 結構標準
+  };
+}
+
+async function getBRANZData(coordinates: {
+  lat: number;
+  lng: number;
+}): Promise<BRANZClimateData> {
+  // 方法 1: BRANZ 官方 API（如果存在）
+  // 方法 2: 反向工程 BRANZ Maps
+  // 方法 3: 預建資料庫 + 地理插值
+
+  const branzResponse = await fetch(
+    "https://branzdata.example.com/api/climate-zones",
+    {
+      params: {
+        lat: coordinates.lat,
+        lng: coordinates.lng,
+      },
+    }
+  );
+
+  return await branzResponse.json();
+}
+```
+
+**反向工程 BRANZ Maps**:
+
+```typescript
+// lib/branz/reverse-engineer-maps.ts
+
+async function scrapeBRANZMaps(coordinates: { lat: number; lng: number }) {
+  // 1. 載入 BRANZ 互動地圖
+  const mapUrl = `https://branz.co.nz/climate-zones/map?lat=${coordinates.lat}&lng=${coordinates.lng}`;
+
+  // 2. 使用 Puppeteer 模擬瀏覽器
+  const browser = await puppeteer.launch();
+  const page = await browser.newPage();
+  await page.goto(mapUrl);
+
+  // 3. 擷取地圖圖層數據
+  const zoneData = await page.evaluate(() => {
+    // 執行網頁內的 JavaScript 獲取圖層資訊
+    return window.mapLayers.getZoneInfo();
+  });
+
+  await browser.close();
+
+  return zoneData;
+}
+```
+
+**C. Council 表格自動填寫（整合功能）**
+
+當用戶創建項目時：
+
+```typescript
+// convex/projects.ts
+
+export const createProject = mutation({
+  args: {
+    name: v.string(),
+    siteAddress: v.string(),
+    // ...
+  },
+  handler: async (ctx, args) => {
+    // 1. 創建項目
+    const projectId = await ctx.db.insert("projects", args);
+
+    // 2. 自動查詢 Zone 和氣候數據
+    const zoneData = await getZoneByAddress(args.siteAddress);
+    const climateData = await getBRANZData(zoneData.coordinates);
+
+    // 3. 儲存到項目
+    await ctx.db.patch(projectId, {
+      zoneInfo: zoneData,
+      climateData: climateData,
+    });
+
+    // 4. 自動生成 Council 表格（已預填地址）
+    const forms = [
+      "AC2326 - Producer Statement Construction",
+      "AC1011 - Lodgement Checklist Residential",
+    ];
+
+    for (const formName of forms) {
+      const filledPDF = await autoFillCouncilForm(formName, {
+        address: args.siteAddress,
+        zone: zoneData.zoneName,
+        // ... 其他資料
+      });
+
+      // 儲存 PDF 到項目
+      const storageId = await ctx.storage.store(filledPDF);
+      await ctx.db.insert("documents", {
+        projectId,
+        name: formName,
+        storageId,
+        autoGenerated: true,
+      });
+    }
+
+    return projectId;
+  },
+});
+```
+
+**D. 項目儀表板顯示**
+
+```tsx
+// components/project-dashboard.tsx
+
+<ProjectDashboard>
+  <Section title="Site Information">
+    <AddressCard address={project.siteAddress} />
+
+    <ZoneCard>
+      <Badge>{zoneInfo.council}</Badge>
+      <h3>{zoneInfo.zoneName}</h3>
+      <p>Code: {zoneInfo.zoneCode}</p>
+
+      <Restrictions>
+        <Item>Height Limit: {zoneInfo.restrictions.heightLimit}m</Item>
+        <Item>Site Coverage: {zoneInfo.restrictions.siteCoverage}%</Item>
+        <Item>
+          Setbacks: F{setbacks.front}m / S{setbacks.side}m / R{setbacks.rear}m
+        </Item>
+      </Restrictions>
+
+      {zoneInfo.overlays.length > 0 && (
+        <Overlays>
+          {zoneInfo.overlays.map((overlay) => (
+            <Badge variant="warning">{overlay}</Badge>
+          ))}
+        </Overlays>
+      )}
+    </ZoneCard>
+
+    <ClimateCard>
+      <h3>BRANZ Climate Data</h3>
+      <Grid>
+        <DataItem label="Wind Zone" value={climateData.zones.wind} />
+        <DataItem
+          label="Earthquake Zone"
+          value={climateData.zones.earthquake}
+        />
+        <DataItem label="Erosion Zone" value={climateData.zones.erosion} />
+        <DataItem label="Climate Zone" value={climateData.zones.climate} />
+      </Grid>
+
+      <Alert>
+        Relevant Building Code:{" "}
+        {climateData.buildingCodeReferences.NZS3604.join(", ")}
+      </Alert>
+    </ClimateCard>
+  </Section>
+
+  <Section title="Auto-Generated Documents">
+    <DocumentList>
+      {autoGeneratedForms.map((form) => (
+        <DocumentCard
+          name={form.name}
+          status="Pre-filled with site data"
+          onView={() => openPDF(form.id)}
+        />
+      ))}
+    </DocumentList>
+  </Section>
+</ProjectDashboard>
+```
+
+#### 技術架構：
+
+**資料快取策略**:
+
+```typescript
+// lib/cache/zone-cache.ts
+
+// 快取 Zone 查詢結果（避免重複請求 Council API）
+const zoneCache = new Map<string, { data: ZoneResult; expiry: Date }>();
+
+async function getCachedZone(address: string) {
+  const cached = zoneCache.get(address);
+  if (cached && cached.expiry > new Date()) {
+    return cached.data;
+  }
+
+  const freshData = await getZoneByAddress(address);
+  zoneCache.set(address, {
+    data: freshData,
+    expiry: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 天
+  });
+
+  return freshData;
+}
+```
+
+**錯誤處理與降級方案**:
+
+```typescript
+async function getZoneWithFallback(address: string) {
+  try {
+    // 嘗試自動查詢
+    return await getZoneByAddress(address);
+  } catch (error) {
+    // 降級：提供手動輸入介面
+    return {
+      status: "manual_input_required",
+      message: "Unable to auto-detect zone. Please select manually.",
+      manualOptions: await getCouncilZoneList(),
+    };
+  }
+}
+```
+
+**監測與維護**:
+
+- 定期驗證 API 端點是否變更
+- 自動化測試已知地址的 Zone 準確性
+- Council 規則變更通知系統
+
+#### 法律與免責聲明：
+
+**重要聲明**（顯示在每個查詢結果）:
+
+> ⚠️ **Disclaimer**: This information is automatically retrieved from council databases and BRANZ data sources for reference purposes only. Always verify with the relevant council and consult with licensed professionals. Archidocky is not responsible for any inaccuracies or outdated information.
+
+#### 優勢與差異化：
+
+✅ **節省時間**: 自動查詢取代手動查找  
+✅ **減少錯誤**: 直接從官方來源獲取資料  
+✅ **即時更新**: 每次查詢都是最新資料  
+✅ **整合體驗**: Zone + 氣候數據 + 表格填寫一次完成  
+✅ **競爭優勢**: 市場上少有平台提供此整合功能
+
+---
+
 ### 3. AI 智能助手系統 (AI-Powered Assistant)
 
 **目標**: 提供建築專業的 AI 輔助服務
