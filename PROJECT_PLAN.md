@@ -1155,44 +1155,1061 @@ rfis: defineTable({
 
 ### 4. 法規知識庫系統 (Regulatory Knowledge Base)
 
-**目標**: 建立完整的建築法規和合規性資料庫
+**目標**: 建立完整的建築法規和合規性資料庫，使用 Google AI 技術實現高效智能問答
 
-#### 內容管理:
+#### Google AI 整合方案 - RAG (Retrieval-Augmented Generation) 架構:
+
+**核心技術棧**:
+
+1. **Gemini Embeddings API** (`gemini-embedding-001`)
+   - 將 PDF 法規文件轉換為向量嵌入 (Vector Embeddings)
+   - 支援維度: 768, 1536, 3072 (建議使用 768 節省儲存空間)
+   - 任務類型: `RETRIEVAL_DOCUMENT` (索引文件) + `QUESTION_ANSWERING` (查詢)
+   
+2. **Gemini Document Processing API**
+   - 原生理解 PDF 內容（文字、圖表、表格）
+   - 支援最多 1000 頁 PDF 或 50MB
+   - 每頁 = 258 tokens
+
+3. **Context Caching**
+   - **Implicit Caching** (自動啟用): Gemini 2.5 Flash 最低 1024 tokens 自動快取
+   - **Explicit Caching** (手動控制): 大型法規文件快取後重複使用，大幅降低成本
+   - TTL 可設定 (預設 1 小時，可延長)
+
+4. **Vector Database** (儲存嵌入向量)
+   - 選項 1: **Convex Database** (內建向量搜尋，Phase 1-2)
+   - 選項 2: **Google Cloud BigQuery** (企業級，Phase 3+)
+   - 選項 3: **Pinecone / Qdrant / Weaviate** (第三方向量資料庫)
+
+#### 資料處理流程:
+
+**A. 建立知識庫 (一次性處理)**
+
+```typescript
+// lib/knowledge-base/build-index.ts
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+interface RegulationDocument {
+  id: string;
+  title: string;
+  source: 'NZ Building Code' | 'BRANZ' | 'Council' | 'Supplier';
+  category: 'Structural' | 'Fire Safety' | 'Insulation' | 'Plumbing' | 'Other';
+  pdfUrl: string;
+  uploadDate: Date;
+}
+
+// Step 1: 處理 PDF 並提取內容
+async function processRegulationPDF(doc: RegulationDocument) {
+  // 1.1 上傳 PDF 到 Gemini Files API (可重複使用 48 小時)
+  const uploadedFile = await genAI.uploadFile(doc.pdfUrl, {
+    mimeType: 'application/pdf',
+  });
+
+  // 1.2 使用 Gemini 提取結構化內容
+  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+  
+  const extractionPrompt = `
+    Extract structured information from this building regulation document:
+    1. Document title and reference number
+    2. Key sections and their page numbers
+    3. Technical requirements (dimensions, materials, standards)
+    4. Compliance criteria
+    5. Related standards or references
+    
+    Output as JSON.
+  `;
+
+  const result = await model.generateContent([uploadedFile, extractionPrompt]);
+  const structuredData = JSON.parse(result.response.text());
+
+  return { uploadedFile, structuredData };
+}
+
+// Step 2: 生成 Embeddings（分段處理）
+async function generateEmbeddings(document: any) {
+  const embeddingModel = genAI.getGenerativeModel({ 
+    model: "gemini-embedding-001" 
+  });
+
+  // 將文件分成小段（每段 < 2048 tokens）
+  const chunks = splitIntoChunks(document.structuredData, 1500);
+
+  const embeddings = [];
+  
+  for (const chunk of chunks) {
+    const result = await embeddingModel.embedContent({
+      content: chunk.text,
+      taskType: "RETRIEVAL_DOCUMENT",
+      outputDimensionality: 768, // 節省儲存空間
+    });
+
+    embeddings.push({
+      chunkId: chunk.id,
+      documentId: document.id,
+      text: chunk.text,
+      embedding: result.embedding.values,
+      metadata: {
+        source: document.source,
+        category: document.category,
+        pageNumber: chunk.pageNumber,
+      }
+    });
+  }
+
+  return embeddings;
+}
+
+// Step 3: 儲存到向量資料庫
+async function storeEmbeddings(embeddings: any[]) {
+  // 選項 1: Convex (Phase 1-2)
+  await Promise.all(
+    embeddings.map(emb => 
+      convex.mutation.knowledgeBase.insertEmbedding({
+        ...emb,
+        embedding: Array.from(emb.embedding), // 轉為陣列
+      })
+    )
+  );
+
+  // 選項 2: Pinecone (Phase 3+)
+  // await pineconeIndex.upsert(embeddings);
+}
+
+// 完整流程
+async function buildKnowledgeBase(documents: RegulationDocument[]) {
+  for (const doc of documents) {
+    console.log(`Processing: ${doc.title}`);
+    
+    // 1. 提取內容
+    const processed = await processRegulationPDF(doc);
+    
+    // 2. 生成嵌入
+    const embeddings = await generateEmbeddings({
+      id: doc.id,
+      ...processed,
+      source: doc.source,
+      category: doc.category,
+    });
+    
+    // 3. 儲存
+    await storeEmbeddings(embeddings);
+    
+    console.log(`✓ Indexed ${embeddings.length} chunks from ${doc.title}`);
+  }
+}
+```
+
+**B. 用戶查詢流程 (實時問答)**
+
+```typescript
+// lib/knowledge-base/query.ts
+
+interface QueryResult {
+  answer: string;
+  sources: {
+    documentTitle: string;
+    pageNumber: number;
+    relevanceScore: number;
+    excerpt: string;
+  }[];
+  cachedTokens?: number;
+}
+
+async function answerRegulationQuery(
+  userQuestion: string
+): Promise<QueryResult> {
+  
+  // Step 1: 將問題轉換為嵌入向量
+  const embeddingModel = genAI.getGenerativeModel({ 
+    model: "gemini-embedding-001" 
+  });
+  
+  const questionEmbedding = await embeddingModel.embedContent({
+    content: userQuestion,
+    taskType: "QUESTION_ANSWERING", // 優化查詢用途
+    outputDimensionality: 768,
+  });
+
+  // Step 2: 向量相似度搜尋 (找最相關的 5 段內容)
+  const relevantChunks = await convex.query.knowledgeBase.searchSimilar({
+    embedding: Array.from(questionEmbedding.embedding.values),
+    limit: 5,
+    threshold: 0.7, // 相似度閾值
+  });
+
+  // Step 3: 使用 Context Caching 優化成本
+  const cachedContext = relevantChunks
+    .map(chunk => `[${chunk.metadata.source} - Page ${chunk.metadata.pageNumber}]\n${chunk.text}`)
+    .join('\n\n---\n\n');
+
+  // 建立或獲取快取
+  let cache = await genAI.caches.get({ name: "regulation-context-cache" });
+  
+  if (!cache) {
+    cache = await genAI.caches.create({
+      model: "gemini-2.5-flash",
+      contents: [{
+        role: "user",
+        parts: [{
+          text: `You are a building regulation expert. Use the following regulation excerpts to answer questions:\n\n${cachedContext}`
+        }]
+      }],
+      ttl: 3600, // 快取 1 小時
+    });
+  }
+
+  // Step 4: 生成答案 (使用快取的法規內容)
+  const model = genAI.getGenerativeModel({ 
+    model: "gemini-2.5-flash",
+    cachedContent: cache.name,
+  });
+
+  const response = await model.generateContent(userQuestion);
+
+  // Step 5: 返回答案和來源
+  return {
+    answer: response.response.text(),
+    sources: relevantChunks.map(chunk => ({
+      documentTitle: chunk.documentTitle,
+      pageNumber: chunk.metadata.pageNumber,
+      relevanceScore: chunk.similarity,
+      excerpt: chunk.text.substring(0, 200) + '...',
+    })),
+    cachedTokens: response.usageMetadata?.cachedContentTokenCount,
+  };
+}
+```
+
+**C. Convex Schema 定義**
+
+```typescript
+// convex/schema.ts
+
+import { defineSchema, defineTable } from "convex/server";
+import { v } from "convex/values";
+
+export default defineSchema({
+  // 法規文件
+  regulationDocuments: defineTable({
+    title: v.string(),
+    source: v.string(), // 'NZ Building Code', 'BRANZ', etc.
+    category: v.string(),
+    pdfStorageId: v.id("_storage"),
+    geminiFileId: v.optional(v.string()), // Files API ID
+    uploadedAt: v.number(),
+    processedAt: v.optional(v.number()),
+    totalPages: v.number(),
+    totalChunks: v.number(),
+  }).index("by_source", ["source"])
+    .index("by_category", ["category"]),
+
+  // 向量嵌入（分段）
+  regulationEmbeddings: defineTable({
+    documentId: v.id("regulationDocuments"),
+    chunkIndex: v.number(),
+    text: v.string(),
+    embedding: v.array(v.float64()), // 768 維向量
+    metadata: v.object({
+      source: v.string(),
+      category: v.string(),
+      pageNumber: v.number(),
+      sectionTitle: v.optional(v.string()),
+    }),
+  }).index("by_document", ["documentId"])
+    .vectorIndex("by_embedding", {
+      vectorField: "embedding",
+      dimensions: 768,
+      filterFields: ["metadata.source", "metadata.category"],
+    }),
+
+  // 用戶查詢歷史
+  regulationQueries: defineTable({
+    userId: v.id("users"),
+    question: v.string(),
+    answer: v.string(),
+    sources: v.array(v.object({
+      documentId: v.id("regulationDocuments"),
+      pageNumber: v.number(),
+      relevanceScore: v.float64(),
+    })),
+    cachedTokensUsed: v.optional(v.number()),
+    queriedAt: v.number(),
+  }).index("by_user", ["userId"]),
+});
+```
+
+#### 內容來源管理:
 
 **官方法規庫**
-
-- 國家建築法規
-- 地方政府法規
-- 行業標準規範
-- 環保和安全規定
+- NZ Building Code (MBIE)
+- Building Consent Authority (BCA) - Australia
+- BRANZ Technical Recommendations
+- Council District Plans (Auckland, Wellington, Christchurch)
+- Environmental & Safety Standards (EPA, WorkSafe)
 
 **供應商合規資料**
-
-- 產品技術規格
-- 安裝施工標準
-- 認證和測試報告
-- 維護保養指南
+- 產品技術規格 (Appraisals, CodeMark)
+- 安裝施工標準 (Installation Guides)
+- 認證和測試報告 (ISO, AS/NZS)
+- 維護保養指南 (Warranty Documents)
 
 **用戶貢獻內容**
+- 用戶上傳的常用法規 (需審核)
+- 實務經驗分享 (Case Studies)
+- 問題解決方案 (Best Practices)
 
-- 用戶上傳的常用法規
-- 實務經驗分享
-- 案例分析和解決方案
-- 最佳實務指南
+#### 成本優化策略:
 
-#### AI 學習系統:
+**1. Batch Embeddings (批次處理)**
+```typescript
+// 使用 Batch API 生成嵌入，成本降低 50%
+const batchResults = await genAI.batchEmbedContent({
+  requests: documents.map(doc => ({
+    model: "gemini-embedding-001",
+    content: doc.text,
+    taskType: "RETRIEVAL_DOCUMENT",
+  }))
+});
+```
 
-- 法規內容自動索引
-- 交叉引用關係建立
-- 智能問答系統
-- 個人化推薦
+**2. Context Caching (減少重複成本)**
+- 常用法規文件快取 1 小時或更長
+- 快取命中可節省 75% 成本
+- Implicit Caching 自動啟用 (Gemini 2.5 Flash)
 
-**技術架構**:
+**3. Embedding 維度優化**
+- 使用 768 維而非 3072 維
+- 節省 75% 儲存空間
+- MTEB 分數僅降低 0.17 (67.99 vs 68.16)
 
-- 內容管理: Convex Database
-- 搜尋引擎: Algolia 或內建搜尋
-- AI 學習: RAG (檢索增強生成)
-- 內容結構化: Markdown + 標籤系統
+**成本估算** (每月):
+```
+假設: 500 份法規文件，平均 50 頁/份
+- 總頁數: 25,000 頁
+- Embeddings 生成 (一次性): 25,000 × 258 tokens × $0.0001 = $0.65
+- 向量儲存: 25,000 chunks × 768 dims × 4 bytes = 77MB → Convex 免費
+- 用戶查詢 (1000 次/月):
+  * 問題嵌入: 1000 × 50 tokens × $0.0001 = $0.005
+  * Gemini 生成 (使用 Context Caching):
+    - Cached input: 1000 × 5000 tokens × $0.000025 = $0.125
+    - Output: 1000 × 500 tokens × $0.0003 = $0.15
+  
+總成本: ~$0.93/月 (vs 無快取 ~$3.5/月，節省 73%)
+```
+
+#### 用戶介面範例:
+
+```tsx
+// components/RegulationSearch.tsx
+<RegulationSearchInterface>
+  <SearchBar 
+    placeholder="Ask about NZ Building Code, BRANZ standards, or Council requirements..."
+    onSubmit={handleQuery}
+  />
+  
+  {loading && <Skeleton />}
+  
+  {result && (
+    <>
+      <AnswerCard>
+        <AIResponse>{result.answer}</AIResponse>
+        {result.cachedTokens && (
+          <CostSaving>
+            💚 Saved {result.cachedTokens} tokens using cached context
+          </CostSaving>
+        )}
+      </AnswerCard>
+      
+      <SourcesList>
+        <h3>Sources:</h3>
+        {result.sources.map(source => (
+          <SourceCard 
+            key={source.documentTitle}
+            title={source.documentTitle}
+            page={source.pageNumber}
+            relevance={source.relevanceScore}
+            excerpt={source.excerpt}
+            onViewPDF={() => openPDF(source.documentId)}
+          />
+        ))}
+      </SourcesList>
+    </>
+  )}
+</RegulationSearchInterface>
+```
+
+#### PDF 儲存策略:
+
+**選項 1: Convex File Storage (推薦 Phase 1-2)**
+
+```typescript
+// 管理員上傳法規 PDF
+// app/admin/regulations/upload/page.tsx
+
+async function uploadRegulationPDF(file: File) {
+  // 1. 上傳到 Convex Storage
+  const storageId = await convex.mutation.regulations.uploadPDF({
+    file: file,
+    metadata: {
+      title: "NZ Building Code - Clause B1 Structure",
+      source: "MBIE",
+      category: "Structural",
+      version: "2024",
+    }
+  });
+
+  // 2. 觸發背景處理（Convex Action）
+  await convex.action.regulations.processDocument({
+    storageId: storageId,
+  });
+
+  return storageId;
+}
+
+// convex/regulations.ts
+export const uploadPDF = mutation({
+  args: {
+    file: v.any(),
+    metadata: v.object({
+      title: v.string(),
+      source: v.string(),
+      category: v.string(),
+      version: v.string(),
+    }),
+  },
+  handler: async (ctx, args) => {
+    // 儲存到 Convex Storage
+    const storageId = await ctx.storage.store(args.file);
+    
+    // 記錄到資料庫
+    const docId = await ctx.db.insert("regulationDocuments", {
+      ...args.metadata,
+      pdfStorageId: storageId,
+      uploadedAt: Date.now(),
+      status: "pending_processing",
+    });
+
+    return storageId;
+  },
+});
+```
+
+**選項 2: AWS S3 + Gemini Files API (Phase 3+)**
+
+```typescript
+// 大量法規文件存在 S3，成本更低
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+
+async function uploadToS3AndProcess(file: File) {
+  const s3 = new S3Client({ region: "ap-southeast-2" });
+  
+  // 1. 上傳到 S3
+  await s3.send(new PutObjectCommand({
+    Bucket: "archidocky-regulations",
+    Key: `regulations/${file.name}`,
+    Body: file,
+    ContentType: "application/pdf",
+  }));
+
+  const s3Url = `https://archidocky-regulations.s3.ap-southeast-2.amazonaws.com/regulations/${file.name}`;
+
+  // 2. 記錄到 Convex（只存 URL，不存檔案）
+  await convex.mutation.regulations.create({
+    title: file.name,
+    s3Url: s3Url,
+    status: "pending_processing",
+  });
+
+  return s3Url;
+}
+```
+
+**儲存成本比較**:
+```
+假設 500 份法規 PDF，平均 5MB/份 = 2.5GB
+
+Convex Storage:
+- 5GB 免費額度 → 前 2.5GB 免費
+- 超出部分: $0.25/GB → $0
+
+AWS S3 Standard:
+- 儲存: 2.5GB × $0.023/GB = $0.058/月
+- 請求費用: 500 次上傳 × $0.005/1000 = $0.0025
+
+結論: Phase 1-2 用 Convex (免費)，Phase 3+ 如超過 5GB 才考慮 S3
+```
+
+#### 餵給 AI 的完整流程:
+
+**方法 1: Gemini Files API (推薦，48小時免費快取)**
+
+```typescript
+// convex/actions.ts (Server-side Action)
+import { v } from "convex/values";
+import { action } from "./_generated/server";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
+export const processDocument = action({
+  args: { storageId: v.id("_storage") },
+  handler: async (ctx, args) => {
+    // 1. 從 Convex Storage 取得 PDF URL
+    const pdfUrl = await ctx.storage.getUrl(args.storageId);
+    
+    if (!pdfUrl) throw new Error("PDF not found");
+
+    // 2. 下載 PDF 為 Buffer
+    const response = await fetch(pdfUrl);
+    const pdfBuffer = await response.arrayBuffer();
+
+    // 3. 上傳到 Gemini Files API (48 小時免費儲存)
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+    
+    const uploadedFile = await genAI.files.upload({
+      file: {
+        data: Buffer.from(pdfBuffer),
+        mimeType: "application/pdf",
+      },
+      displayName: "Building Regulation Document",
+    });
+
+    console.log(`✓ Uploaded to Gemini: ${uploadedFile.uri}`);
+
+    // 4. 讓 Gemini 提取結構化內容
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+    
+    const extractionPrompt = `
+      Analyze this building regulation PDF and extract:
+      
+      1. Document Metadata:
+         - Official title and reference number
+         - Publication date and version
+         - Issuing authority (MBIE, Council, BRANZ, etc.)
+      
+      2. Table of Contents:
+         - All section titles and page numbers
+         - Hierarchical structure (chapters, sections, subsections)
+      
+      3. Technical Requirements:
+         - Specific dimensions, measurements, tolerances
+         - Material specifications
+         - Referenced standards (NZS, AS/NZS, ISO)
+         - Compliance criteria and acceptance methods
+      
+      4. Key Concepts:
+         - Important definitions and terms
+         - Performance requirements
+         - Limitations and exclusions
+      
+      Output as structured JSON with this schema:
+      {
+        "metadata": {...},
+        "tableOfContents": [...],
+        "sections": [
+          {
+            "title": "string",
+            "pageNumber": number,
+            "content": "string",
+            "requirements": [...],
+            "references": [...]
+          }
+        ],
+        "glossary": {...}
+      }
+    `;
+
+    const result = await model.generateContent([
+      {
+        fileData: {
+          mimeType: uploadedFile.mimeType,
+          fileUri: uploadedFile.uri,
+        },
+      },
+      { text: extractionPrompt },
+    ]);
+
+    const extractedData = JSON.parse(result.response.text());
+
+    // 5. 儲存提取的結構化數據
+    await ctx.runMutation(api.regulations.saveExtractedData, {
+      storageId: args.storageId,
+      geminiFileUri: uploadedFile.uri,
+      extractedData: extractedData,
+    });
+
+    // 6. 生成 Embeddings（分段處理）
+    await ctx.runAction(api.regulations.generateEmbeddings, {
+      storageId: args.storageId,
+      sections: extractedData.sections,
+    });
+
+    return { success: true, geminiFileUri: uploadedFile.uri };
+  },
+});
+
+// 生成 Embeddings
+export const generateEmbeddings = action({
+  args: {
+    storageId: v.id("_storage"),
+    sections: v.any(),
+  },
+  handler: async (ctx, args) => {
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+    const embeddingModel = genAI.getGenerativeModel({ 
+      model: "gemini-embedding-001" 
+    });
+
+    // 將每個 section 分成小塊（避免超過 2048 token 限制）
+    const chunks = [];
+    for (const section of args.sections) {
+      const sectionChunks = splitTextIntoChunks(section.content, 1500);
+      
+      sectionChunks.forEach((chunk, index) => {
+        chunks.push({
+          text: chunk,
+          metadata: {
+            sectionTitle: section.title,
+            pageNumber: section.pageNumber,
+            chunkIndex: index,
+          },
+        });
+      });
+    }
+
+    // 批次生成 embeddings (Batch API 節省 50% 成本)
+    const batchSize = 100;
+    for (let i = 0; i < chunks.length; i += batchSize) {
+      const batch = chunks.slice(i, i + batchSize);
+      
+      const embeddings = await Promise.all(
+        batch.map(async (chunk) => {
+          const result = await embeddingModel.embedContent({
+            content: chunk.text,
+            taskType: "RETRIEVAL_DOCUMENT",
+            outputDimensionality: 768,
+          });
+
+          return {
+            text: chunk.text,
+            embedding: Array.from(result.embedding.values),
+            metadata: chunk.metadata,
+          };
+        })
+      );
+
+      // 儲存到 Convex
+      await ctx.runMutation(api.regulations.insertEmbeddings, {
+        storageId: args.storageId,
+        embeddings: embeddings,
+      });
+
+      console.log(`✓ Processed ${i + batch.length}/${chunks.length} chunks`);
+    }
+
+    return { totalChunks: chunks.length };
+  },
+});
+
+// 輔助函數：分段
+function splitTextIntoChunks(text: string, maxTokens: number): string[] {
+  // 簡單分段邏輯（實際應使用 tokenizer）
+  const words = text.split(/\s+/);
+  const chunks: string[] = [];
+  let currentChunk: string[] = [];
+  let currentTokens = 0;
+
+  for (const word of words) {
+    const wordTokens = Math.ceil(word.length / 4); // 粗略估計
+    
+    if (currentTokens + wordTokens > maxTokens) {
+      chunks.push(currentChunk.join(" "));
+      currentChunk = [word];
+      currentTokens = wordTokens;
+    } else {
+      currentChunk.push(word);
+      currentTokens += wordTokens;
+    }
+  }
+
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk.join(" "));
+  }
+
+  return chunks;
+}
+```
+
+**方法 2: 直接處理（小型 PDF < 10MB）**
+
+```typescript
+// 如果 PDF 較小，可以直接在請求中傳送
+export const processSmallPDF = action({
+  args: { storageId: v.id("_storage") },
+  handler: async (ctx, args) => {
+    const pdfUrl = await ctx.storage.getUrl(args.storageId);
+    const response = await fetch(pdfUrl);
+    const pdfBuffer = await response.arrayBuffer();
+
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+
+    // 直接傳送 base64 編碼的 PDF
+    const base64Pdf = Buffer.from(pdfBuffer).toString('base64');
+    
+    const result = await model.generateContent([
+      {
+        inlineData: {
+          mimeType: "application/pdf",
+          data: base64Pdf,
+        },
+      },
+      { text: "Summarize this document" },
+    ]);
+
+    return result.response.text();
+  },
+});
+```
+
+#### 驗證 AI 是否真正理解內容:
+
+**測試策略 1: 問答驗證 (Q&A Testing)**
+
+```typescript
+// tests/knowledge-base-validation.test.ts
+
+interface ValidationQuestion {
+  question: string;
+  expectedAnswer: string;
+  documentTitle: string;
+  pageNumber: number;
+  category: 'factual' | 'comprehension' | 'application';
+}
+
+const validationQuestions: ValidationQuestion[] = [
+  // 事實型問題（直接從文件提取）
+  {
+    question: "What is the minimum concrete strength for foundations in NZ Building Code B1?",
+    expectedAnswer: "17.5 MPa",
+    documentTitle: "NZ Building Code - Clause B1",
+    pageNumber: 23,
+    category: "factual",
+  },
+  
+  // 理解型問題（需要綜合理解）
+  {
+    question: "When is a building consent required for deck construction in Auckland?",
+    expectedAnswer: "When the deck is higher than 1.5m above ground or attached to a dwelling",
+    documentTitle: "Auckland Building Consent Requirements",
+    pageNumber: 12,
+    category: "comprehension",
+  },
+  
+  // 應用型問題（需要推理）
+  {
+    question: "Can I use H1.2 treated timber for external cladding in Wellington's coastal area?",
+    expectedAnswer: "No, coastal areas require H3.2 treatment minimum due to high corrosion risk",
+    documentTitle: "BRANZ Timber Treatment Standards",
+    pageNumber: 45,
+    category: "application",
+  },
+];
+
+async function runValidationTests() {
+  const results = [];
+  
+  for (const test of validationQuestions) {
+    console.log(`\nTesting: ${test.question}`);
+    
+    // 查詢 AI
+    const aiResponse = await answerRegulationQuery(test.question);
+    
+    // 驗證答案相似度
+    const similarity = calculateSemanticSimilarity(
+      aiResponse.answer,
+      test.expectedAnswer
+    );
+    
+    // 驗證來源正確性
+    const correctSource = aiResponse.sources.some(
+      s => s.documentTitle === test.documentTitle &&
+           Math.abs(s.pageNumber - test.pageNumber) <= 2 // 允許 ±2 頁誤差
+    );
+    
+    const passed = similarity > 0.8 && correctSource;
+    
+    results.push({
+      question: test.question,
+      category: test.category,
+      aiAnswer: aiResponse.answer,
+      expectedAnswer: test.expectedAnswer,
+      similarity: similarity,
+      correctSource: correctSource,
+      passed: passed,
+    });
+    
+    console.log(`  ✓ Similarity: ${(similarity * 100).toFixed(1)}%`);
+    console.log(`  ✓ Source: ${correctSource ? 'Correct' : 'Wrong'}`);
+    console.log(`  ${passed ? '✅ PASSED' : '❌ FAILED'}`);
+  }
+  
+  // 生成報告
+  const passRate = results.filter(r => r.passed).length / results.length;
+  console.log(`\n📊 Overall Pass Rate: ${(passRate * 100).toFixed(1)}%`);
+  
+  return results;
+}
+
+// 語義相似度計算
+async function calculateSemanticSimilarity(text1: string, text2: string): Promise<number> {
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+  const embeddingModel = genAI.getGenerativeModel({ model: "gemini-embedding-001" });
+  
+  const [emb1, emb2] = await Promise.all([
+    embeddingModel.embedContent({ content: text1, taskType: "SEMANTIC_SIMILARITY" }),
+    embeddingModel.embedContent({ content: text2, taskType: "SEMANTIC_SIMILARITY" }),
+  ]);
+  
+  // 餘弦相似度
+  return cosineSimilarity(emb1.embedding.values, emb2.embedding.values);
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  const dotProduct = a.reduce((sum, val, i) => sum + val * b[i], 0);
+  const magA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0));
+  const magB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0));
+  return dotProduct / (magA * magB);
+}
+```
+
+**測試策略 2: 來源追蹤驗證 (Source Tracing)**
+
+```typescript
+// 驗證 AI 回答的來源是否真實存在
+async function verifySourceAccuracy(question: string) {
+  const response = await answerRegulationQuery(question);
+  
+  for (const source of response.sources) {
+    // 1. 取得原始 PDF
+    const pdfUrl = await convex.query.regulations.getPDFUrl({
+      documentId: source.documentId,
+    });
+    
+    // 2. 提取特定頁面內容
+    const pageContent = await extractPDFPage(pdfUrl, source.pageNumber);
+    
+    // 3. 檢查引用的內容是否真實存在
+    const excerptExists = pageContent.includes(source.excerpt.substring(0, 50));
+    
+    console.log(`Source: ${source.documentTitle} - Page ${source.pageNumber}`);
+    console.log(`Excerpt exists: ${excerptExists ? '✅' : '❌'}`);
+    
+    if (!excerptExists) {
+      console.warn(`⚠️ Hallucination detected! Source may be incorrect.`);
+    }
+  }
+}
+```
+
+**測試策略 3: 對比測試 (A/B Testing)**
+
+```typescript
+// 同一問題問兩次，檢查答案一致性
+async function testConsistency(question: string, runs: number = 5) {
+  const answers = [];
+  
+  for (let i = 0; i < runs; i++) {
+    const response = await answerRegulationQuery(question);
+    answers.push(response.answer);
+  }
+  
+  // 計算答案之間的相似度
+  const similarities = [];
+  for (let i = 0; i < answers.length - 1; i++) {
+    const sim = await calculateSemanticSimilarity(answers[i], answers[i + 1]);
+    similarities.push(sim);
+  }
+  
+  const avgSimilarity = similarities.reduce((a, b) => a + b, 0) / similarities.length;
+  
+  console.log(`Consistency Score: ${(avgSimilarity * 100).toFixed(1)}%`);
+  
+  if (avgSimilarity < 0.85) {
+    console.warn('⚠️ Low consistency - AI may be hallucinating');
+  }
+  
+  return { avgSimilarity, answers };
+}
+```
+
+**測試策略 4: 人工審核界面 (Human Review UI)**
+
+```tsx
+// components/admin/KnowledgeBaseReview.tsx
+<ReviewInterface>
+  {testResults.map(result => (
+    <ReviewCard key={result.question}>
+      <Question>{result.question}</Question>
+      
+      <ComparisonView>
+        <Column>
+          <Label>Expected Answer</Label>
+          <Text>{result.expectedAnswer}</Text>
+        </Column>
+        
+        <Column>
+          <Label>AI Answer</Label>
+          <Text>{result.aiAnswer}</Text>
+        </Column>
+      </ComparisonView>
+      
+      <Metrics>
+        <Metric>
+          <Label>Semantic Similarity</Label>
+          <Progress value={result.similarity * 100} />
+          <Value>{(result.similarity * 100).toFixed(1)}%</Value>
+        </Metric>
+        
+        <Metric>
+          <Label>Source Accuracy</Label>
+          <Badge variant={result.correctSource ? 'success' : 'error'}>
+            {result.correctSource ? 'Correct' : 'Wrong'}
+          </Badge>
+        </Metric>
+      </Metrics>
+      
+      <Sources>
+        {result.sources.map(source => (
+          <SourceTag 
+            key={source.documentTitle}
+            onClick={() => openPDF(source.documentId, source.pageNumber)}
+          >
+            📄 {source.documentTitle} - p.{source.pageNumber}
+          </SourceTag>
+        ))}
+      </Sources>
+      
+      <Actions>
+        <Button 
+          variant={result.passed ? 'success' : 'destructive'}
+          onClick={() => markReview(result.id, !result.passed)}
+        >
+          {result.passed ? '✅ Approve' : '❌ Needs Review'}
+        </Button>
+      </Actions>
+    </ReviewCard>
+  ))}
+</ReviewInterface>
+```
+
+**自動化驗證管道 (CI/CD Integration)**
+
+```yaml
+# .github/workflows/validate-knowledge-base.yml
+name: Validate Knowledge Base
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # 每週日執行
+  workflow_dispatch:  # 手動觸發
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Run validation tests
+        run: npm run test:knowledge-base
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CONVEX_DEPLOYMENT: ${{ secrets.CONVEX_DEPLOYMENT }}
+      
+      - name: Generate report
+        run: npm run test:report
+      
+      - name: Upload results
+        uses: actions/upload-artifact@v3
+        with:
+          name: validation-report
+          path: ./test-results/
+      
+      - name: Notify on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "⚠️ Knowledge Base validation failed!"
+            }
+```
+
+#### 持續監控與改進:
+
+```typescript
+// convex/analytics.ts
+
+// 記錄每次查詢的質量指標
+export const logQueryQuality = mutation({
+  args: {
+    question: v.string(),
+    answer: v.string(),
+    sources: v.array(v.any()),
+    userFeedback: v.optional(v.object({
+      helpful: v.boolean(),
+      accurate: v.boolean(),
+      comment: v.optional(v.string()),
+    })),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.insert("queryLogs", {
+      ...args,
+      timestamp: Date.now(),
+    });
+  },
+});
+
+// 分析低質量答案
+export const analyzeLowQualityAnswers = query({
+  handler: async (ctx) => {
+    const lowQualityQueries = await ctx.db
+      .query("queryLogs")
+      .filter(q => 
+        q.eq(q.field("userFeedback.helpful"), false) ||
+        q.eq(q.field("userFeedback.accurate"), false)
+      )
+      .collect();
+
+    // 找出需要改進的文件
+    const problematicDocs = {};
+    lowQualityQueries.forEach(query => {
+      query.sources.forEach(source => {
+        if (!problematicDocs[source.documentId]) {
+          problematicDocs[source.documentId] = 0;
+        }
+        problematicDocs[source.documentId]++;
+      });
+    });
+
+    return { 
+      totalLowQuality: lowQualityQueries.length,
+      problematicDocs: problematicDocs,
+    };
+  },
+});
+```
+
+#### 技術優勢:
+
+✅ **準確性高** - Gemini 原生理解 PDF（含圖表、表格）  
+✅ **成本低** - Context Caching + Batch API 節省 50-75% 費用  
+✅ **可擴展** - 支援 1000 頁文件，向量資料庫可無限擴展  
+✅ **即時更新** - 新法規上傳後自動索引  
+✅ **可追溯** - 每個答案都附來源和頁碼  
+✅ **多語言** - 支援中英文查詢（Gemini 多語言能力）  
+✅ **可驗證** - 完整測試框架確保答案品質  
+✅ **自我改進** - 用戶反饋循環持續優化
 
 ### 5. RFI 社群論壇 (RFI Community Forum)
 
