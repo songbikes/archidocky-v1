@@ -185,6 +185,7 @@ async function restoreVersion(versionId: string) {
 **Phase 1-3 (MVP): React-PDF**
 
 **選擇原因**:
+
 - ✅ **零成本** - 完全開源 (MIT License)
 - ✅ **快速整合** - 1-2 天完成基本功能
 - ✅ **足夠 MVP** - 涵蓋檢視、註解、文字選取需求
@@ -192,11 +193,13 @@ async function restoreVersion(versionId: string) {
 - ✅ **Next.js 友善** - 官方範例完整
 
 **技術規格**:
+
 ```bash
 npm install react-pdf pdfjs-dist
 ```
 
 **核心功能支援**:
+
 - ✅ 高性能 PDF 渲染 (WebAssembly)
 - ✅ 文字層與註解層
 - ✅ 縮放、旋轉、搜尋
@@ -210,12 +213,14 @@ npm install react-pdf pdfjs-dist
 **Phase 4+ (進階功能): 評估 Nutrient SDK**
 
 **升級時機** (當以下任一條件成立):
+
 1. 付費用戶達到 **50+ 公司**
 2. 用戶強烈要求「即時協作編輯」
 3. 需符合 Council 數位簽名規範
 4. AI 功能需深度整合 PDF 工作流
 
 **Nutrient SDK 優勢**:
+
 - ✅ **完整 PDF 生命週期** - 檢視、編輯、簽名、比對
 - ✅ **即時協作** - 內建 Instant Collaboration
 - ✅ **17 種註解類型** - 專業標註工具
@@ -228,17 +233,20 @@ npm install react-pdf pdfjs-dist
 - 💰 **商業授權** - 需聯繫報價
 
 **技術規格**:
+
 ```bash
 npm install pspdfkit
 # 或使用 Cloud API (免維護基礎設施)
 ```
 
 **遷移策略**:
+
 - React-PDF 與 Nutrient 都是 React 組件
 - 遷移成本低，主要是 API 差異
 - 可逐步遷移（先核心功能，再擴展）
 
 **成本效益分析**:
+
 ```
 React-PDF (Phase 1-3):
 - 授權費用: $0
@@ -286,6 +294,7 @@ Nutrient (Phase 4+):
 **技術實現**:
 
 **Phase 1-3 實作 (React-PDF)**:
+
 ```typescript
 // components/PDFViewer.tsx
 'use client';
@@ -302,9 +311,9 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 export function PDFViewer({ fileUrl }: { fileUrl: string }) {
   const [numPages, setNumPages] = useState<number>();
   const [pageNumber, setPageNumber] = useState(1);
-  
+
   return (
-    <Document 
+    <Document
       file={fileUrl}
       onLoadSuccess={({ numPages }) => setNumPages(numPages)}
       options={{
@@ -313,8 +322,8 @@ export function PDFViewer({ fileUrl }: { fileUrl: string }) {
       }}
     >
       {Array.from(new Array(numPages), (el, index) => (
-        <Page 
-          key={`page_${index + 1}`} 
+        <Page
+          key={`page_${index + 1}`}
           pageNumber={index + 1}
           renderTextLayer={true}
           renderAnnotationLayer={true}
@@ -327,6 +336,7 @@ export function PDFViewer({ fileUrl }: { fileUrl: string }) {
 ```
 
 **協作功能 (Convex 實作)**:
+
 ```typescript
 // convex/annotations.ts
 export const addAnnotation = mutation({
@@ -343,14 +353,14 @@ export const addAnnotation = mutation({
       createdAt: Date.now(),
       createdBy: ctx.auth.getUserIdentity()?.subject,
     });
-    
+
     // 即時通知其他協作者
     await ctx.db.insert("notifications", {
       type: "new_annotation",
       targetUsers: await getProjectMembers(args.pdfId),
       data: { annotationId, pageNumber: args.pageNumber },
     });
-    
+
     return annotationId;
   },
 });
@@ -361,16 +371,17 @@ export const subscribeAnnotations = query({
   handler: async (ctx, args) => {
     return await ctx.db
       .query("annotations")
-      .filter(q => q.eq(q.field("pdfId"), args.pdfId))
+      .filter((q) => q.eq(q.field("pdfId"), args.pdfId))
       .collect();
   },
 });
 ```
 
 **Phase 4+ 升級 (Nutrient)**:
+
 ```typescript
 // components/PDFViewerPro.tsx
-import PSPDFKit from 'pspdfkit';
+import PSPDFKit from "pspdfkit";
 
 export async function PDFViewerPro({ fileUrl }: { fileUrl: string }) {
   useEffect(() => {
@@ -378,25 +389,25 @@ export async function PDFViewerPro({ fileUrl }: { fileUrl: string }) {
       container: "#pspdfkit",
       document: fileUrl,
       licenseKey: process.env.NEXT_PUBLIC_PSPDFKIT_KEY,
-      
+
       // 即時協作
       instant: true,
       instantJSON: {
         documentId: documentId,
         serverUrl: "wss://your-instant-server.com",
       },
-      
+
       // 自訂工具列
       toolbarItems: [
         ...PSPDFKit.defaultToolbarItems,
-        { type: "custom", title: "AI Assistant", onPress: openAIPanel }
+        { type: "custom", title: "AI Assistant", onPress: openAIPanel },
       ],
-      
+
       // 電子簽名
       signatureOptions: {
         enabled: true,
-        appearance: "council-compliant"
-      }
+        appearance: "council-compliant",
+      },
     });
   }, []);
 }
@@ -855,12 +866,14 @@ async function getZoneWithFallback(address: string) {
 **A. 多格式 RFI 解析引擎**
 
 **支援的輸入格式**:
+
 - Email 內文（Gmail/Outlook API）
 - Word 文檔（.docx）
 - PDF 文件（文字型 + 掃描型 OCR）
 - 截圖/圖片（Vision AI + OCR）
 
 **智能內容清理**:
+
 ```typescript
 // 核心原則
 {
@@ -873,6 +886,7 @@ async function getZoneWithFallback(address: string) {
 ```
 
 **AI 處理流程**:
+
 1. 接收多種格式的 RFI 文件
 2. 提取問題並保留原始措辭
 3. 格式化排版、編號
@@ -882,6 +896,7 @@ async function getZoneWithFallback(address: string) {
 7. 生成結構化線上文檔
 
 **技術棧**:
+
 - Word 解析: mammoth.js
 - PDF 解析: pdf-parse + React-PDF (Phase 1-3) / Nutrient Document API (Phase 4+)
 - OCR: Google Document AI / Tesseract.js
@@ -891,6 +906,7 @@ async function getZoneWithFallback(address: string) {
 **B. Cover Letter 生成系統（主要產出）**
 
 **A4 直式專業文檔特性**:
+
 - 公司抬頭（Logo + 聯絡資訊）
 - 收件人資訊（Processor + Council）
 - 項目參考資訊（地址、Consent Number）
@@ -903,6 +919,7 @@ async function getZoneWithFallback(address: string) {
 - 一鍵下載
 
 **生成技術**:
+
 ```typescript
 // 使用 React-PDF (@react-pdf/renderer) 或 PDFKit
 interface CoverLetterData {
@@ -919,6 +936,7 @@ generateCoverLetter(data) → PDF Buffer
 ```
 
 **用途**:
+
 - 下載後上傳到 Council Portal
 - 列印存檔
 - 郵寄給 Council（如需要）
@@ -926,6 +944,7 @@ generateCoverLetter(data) → PDF Buffer
 **C. 線上回覆編輯器**
 
 **功能特性**:
+
 - 雙面板佈局（編輯器 + PDF 預覽）
 - 每個問題獨立回答區
 - Rich Text Editor（格式化文字）
@@ -935,11 +954,12 @@ generateCoverLetter(data) → PDF Buffer
 - 即時 PDF 預覽更新
 
 **用戶體驗**:
+
 ```tsx
 <RFICoverLetterEditor>
   <LeftPanel>
     <CompanyHeaderEditor />
-    {questions.map(q => (
+    {questions.map((q) => (
       <QuestionBlock>
         <OriginalQuestion readOnly>{q.text}</OriginalQuestion>
         <ResponseEditor placeholder="Enter response..." />
@@ -948,11 +968,11 @@ generateCoverLetter(data) → PDF Buffer
     ))}
     <SignatureBlock />
   </LeftPanel>
-  
+
   <RightPanel>
     <LivePDFPreview />
   </RightPanel>
-  
+
   <Actions>
     <DownloadPDF />
     <SaveDraft />
@@ -964,31 +984,34 @@ generateCoverLetter(data) → PDF Buffer
 **D. 通知系統（輔助功能）**
 
 **簡化的團隊通知**:
+
 - 僅限平台內的專案成員
 - 站內通知 ���
 - Email 提醒（可選）
 - 簡單訊息："RFI 回覆已提交"
 
 **通知流程**:
+
 ```typescript
 // 1. 選擇要通知的團隊成員
-selectRecipients(projectMembers)
+selectRecipients(projectMembers);
 
 // 2. 發送站內通知
 createNotification({
   type: "rfi_response",
   message: "RFI response submitted to council",
-  link: "/projects/{id}/rfis/{rfiId}"
-})
+  link: "/projects/{id}/rfis/{rfiId}",
+});
 
 // 3. 可選：Email 提醒
 sendEmail({
   subject: "RFI Response Submitted",
-  body: simpleTemplate(message, projectLink)
-})
+  body: simpleTemplate(message, projectLink),
+});
 ```
 
 **通知介面**:
+
 - 頂部導航欄通知鈴鐺
 - 未讀數量徽章
 - 下拉式通知列表
@@ -997,12 +1020,14 @@ sendEmail({
 **E. 未來擴展：Council Portal 整合**
 
 **願景**:
+
 - 成為業界統一的 RFI 回覆平台
 - 直接整合 Council Portal API
 - 一鍵提交到 Council 系統
 - 自動追蹤回覆狀態
 
 **技術準備**:
+
 ```typescript
 // 模組化設計，為未來整合做準備
 async function submitToCouncilPortal(
@@ -1010,7 +1035,7 @@ async function submitToCouncilPortal(
   council: CouncilType
 ) {
   switch (council) {
-    case 'auckland':
+    case "auckland":
       // 未來：直接 API 上傳
       return await aucklandPortalAPI.submit(coverLetterPDF);
     default:
@@ -1018,71 +1043,85 @@ async function submitToCouncilPortal(
       return {
         downloadUrl: generateURL(coverLetterPDF),
         portalUrl: getCouncilPortalURL(council),
-        instructions: getUploadInstructions(council)
+        instructions: getUploadInstructions(council),
       };
   }
 }
 ```
 
 **資料庫結構**:
+
 ```typescript
 // convex/schema.ts
 rfis: defineTable({
   projectId: v.id("projects"),
-  
+
   // 原始輸入
   originalFormat: v.string(), // 'email' | 'word' | 'pdf' | 'image'
   rawContent: v.string(),
   uploadedFiles: v.array(v.id("_storage")),
-  
+
   // Processor 資訊
   processorName: v.string(),
   processorEmail: v.optional(v.string()),
   council: v.string(),
   receivedDate: v.number(),
-  
+
   // AI 解析後的問題
-  questions: v.array(v.object({
-    id: v.string(),
-    number: v.number(),
-    originalText: v.string(),      // 保留原文（含錯誤）
-    category: v.optional(v.string()), // AI 分類
-    isDuplicate: v.optional(v.boolean()),
-    duplicateOf: v.optional(v.number()),
-    attachedImages: v.optional(v.array(v.string())),
-    attachedLinks: v.optional(v.array(v.string())),
-  })),
-  
+  questions: v.array(
+    v.object({
+      id: v.string(),
+      number: v.number(),
+      originalText: v.string(), // 保留原文（含錯誤）
+      category: v.optional(v.string()), // AI 分類
+      isDuplicate: v.optional(v.boolean()),
+      duplicateOf: v.optional(v.number()),
+      attachedImages: v.optional(v.array(v.string())),
+      attachedLinks: v.optional(v.array(v.string())),
+    })
+  ),
+
   // 用戶回答
-  responses: v.optional(v.array(v.object({
-    questionId: v.string(),
-    responseText: v.string(),
-    responseImages: v.optional(v.array(v.id("_storage"))),
-    respondedAt: v.number(),
-    respondedBy: v.id("users"),
-  }))),
-  
+  responses: v.optional(
+    v.array(
+      v.object({
+        questionId: v.string(),
+        responseText: v.string(),
+        responseImages: v.optional(v.array(v.id("_storage"))),
+        respondedAt: v.number(),
+        respondedBy: v.id("users"),
+      })
+    )
+  ),
+
   // Cover Letter
-  coverLetter: v.optional(v.object({
-    pdfStorageId: v.id("_storage"),
-    generatedAt: v.number(),
-    downloadCount: v.number(),
-  })),
-  
+  coverLetter: v.optional(
+    v.object({
+      pdfStorageId: v.id("_storage"),
+      generatedAt: v.number(),
+      downloadCount: v.number(),
+    })
+  ),
+
   // 狀態追蹤
   status: v.string(), // 'pending' | 'in-progress' | 'completed' | 'submitted'
   submittedToCouncil: v.optional(v.boolean()),
   submittedAt: v.optional(v.number()),
-  
+
   // 通知記錄
-  notificationsSent: v.optional(v.array(v.object({
-    sentAt: v.number(),
-    recipients: v.array(v.id("users")),
-  }))),
-})
+  notificationsSent: v.optional(
+    v.array(
+      v.object({
+        sentAt: v.number(),
+        recipients: v.array(v.id("users")),
+      })
+    )
+  ),
+});
 ```
 
 **工作流程總覽**:
+
 ```
 1. 用戶上傳 RFI（多種格式）
       ↓
@@ -1104,6 +1143,7 @@ rfis: defineTable({
 ```
 
 **技術整合**:
+
 - AI 模型: Google Gemini 2.0 Flash
 - 文檔處理: mammoth.js, pdf-parse, LangChain
 - OCR: Google Document AI
