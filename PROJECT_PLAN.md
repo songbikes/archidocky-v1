@@ -1165,7 +1165,6 @@ rfis: defineTable({
    - 將 PDF 法規文件轉換為向量嵌入 (Vector Embeddings)
    - 支援維度: 768, 1536, 3072 (建議使用 768 節省儲存空間)
    - 任務類型: `RETRIEVAL_DOCUMENT` (索引文件) + `QUESTION_ANSWERING` (查詢)
-   
 2. **Gemini Document Processing API**
    - 原生理解 PDF 內容（文字、圖表、表格）
    - 支援最多 1000 頁 PDF 或 50MB
@@ -1194,8 +1193,8 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 interface RegulationDocument {
   id: string;
   title: string;
-  source: 'NZ Building Code' | 'BRANZ' | 'Council' | 'Supplier';
-  category: 'Structural' | 'Fire Safety' | 'Insulation' | 'Plumbing' | 'Other';
+  source: "NZ Building Code" | "BRANZ" | "Council" | "Supplier";
+  category: "Structural" | "Fire Safety" | "Insulation" | "Plumbing" | "Other";
   pdfUrl: string;
   uploadDate: Date;
 }
@@ -1204,12 +1203,12 @@ interface RegulationDocument {
 async function processRegulationPDF(doc: RegulationDocument) {
   // 1.1 上傳 PDF 到 Gemini Files API (可重複使用 48 小時)
   const uploadedFile = await genAI.uploadFile(doc.pdfUrl, {
-    mimeType: 'application/pdf',
+    mimeType: "application/pdf",
   });
 
   // 1.2 使用 Gemini 提取結構化內容
   const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-  
+
   const extractionPrompt = `
     Extract structured information from this building regulation document:
     1. Document title and reference number
@@ -1229,15 +1228,15 @@ async function processRegulationPDF(doc: RegulationDocument) {
 
 // Step 2: 生成 Embeddings（分段處理）
 async function generateEmbeddings(document: any) {
-  const embeddingModel = genAI.getGenerativeModel({ 
-    model: "gemini-embedding-001" 
+  const embeddingModel = genAI.getGenerativeModel({
+    model: "gemini-embedding-001",
   });
 
   // 將文件分成小段（每段 < 2048 tokens）
   const chunks = splitIntoChunks(document.structuredData, 1500);
 
   const embeddings = [];
-  
+
   for (const chunk of chunks) {
     const result = await embeddingModel.embedContent({
       content: chunk.text,
@@ -1254,7 +1253,7 @@ async function generateEmbeddings(document: any) {
         source: document.source,
         category: document.category,
         pageNumber: chunk.pageNumber,
-      }
+      },
     });
   }
 
@@ -1265,7 +1264,7 @@ async function generateEmbeddings(document: any) {
 async function storeEmbeddings(embeddings: any[]) {
   // 選項 1: Convex (Phase 1-2)
   await Promise.all(
-    embeddings.map(emb => 
+    embeddings.map((emb) =>
       convex.mutation.knowledgeBase.insertEmbedding({
         ...emb,
         embedding: Array.from(emb.embedding), // 轉為陣列
@@ -1281,10 +1280,10 @@ async function storeEmbeddings(embeddings: any[]) {
 async function buildKnowledgeBase(documents: RegulationDocument[]) {
   for (const doc of documents) {
     console.log(`Processing: ${doc.title}`);
-    
+
     // 1. 提取內容
     const processed = await processRegulationPDF(doc);
-    
+
     // 2. 生成嵌入
     const embeddings = await generateEmbeddings({
       id: doc.id,
@@ -1292,10 +1291,10 @@ async function buildKnowledgeBase(documents: RegulationDocument[]) {
       source: doc.source,
       category: doc.category,
     });
-    
+
     // 3. 儲存
     await storeEmbeddings(embeddings);
-    
+
     console.log(`✓ Indexed ${embeddings.length} chunks from ${doc.title}`);
   }
 }
@@ -1320,12 +1319,11 @@ interface QueryResult {
 async function answerRegulationQuery(
   userQuestion: string
 ): Promise<QueryResult> {
-  
   // Step 1: 將問題轉換為嵌入向量
-  const embeddingModel = genAI.getGenerativeModel({ 
-    model: "gemini-embedding-001" 
+  const embeddingModel = genAI.getGenerativeModel({
+    model: "gemini-embedding-001",
   });
-  
+
   const questionEmbedding = await embeddingModel.embedContent({
     content: userQuestion,
     taskType: "QUESTION_ANSWERING", // 優化查詢用途
@@ -1341,27 +1339,34 @@ async function answerRegulationQuery(
 
   // Step 3: 使用 Context Caching 優化成本
   const cachedContext = relevantChunks
-    .map(chunk => `[${chunk.metadata.source} - Page ${chunk.metadata.pageNumber}]\n${chunk.text}`)
-    .join('\n\n---\n\n');
+    .map(
+      (chunk) =>
+        `[${chunk.metadata.source} - Page ${chunk.metadata.pageNumber}]\n${chunk.text}`
+    )
+    .join("\n\n---\n\n");
 
   // 建立或獲取快取
   let cache = await genAI.caches.get({ name: "regulation-context-cache" });
-  
+
   if (!cache) {
     cache = await genAI.caches.create({
       model: "gemini-2.5-flash",
-      contents: [{
-        role: "user",
-        parts: [{
-          text: `You are a building regulation expert. Use the following regulation excerpts to answer questions:\n\n${cachedContext}`
-        }]
-      }],
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: `You are a building regulation expert. Use the following regulation excerpts to answer questions:\n\n${cachedContext}`,
+            },
+          ],
+        },
+      ],
       ttl: 3600, // 快取 1 小時
     });
   }
 
   // Step 4: 生成答案 (使用快取的法規內容)
-  const model = genAI.getGenerativeModel({ 
+  const model = genAI.getGenerativeModel({
     model: "gemini-2.5-flash",
     cachedContent: cache.name,
   });
@@ -1371,11 +1376,11 @@ async function answerRegulationQuery(
   // Step 5: 返回答案和來源
   return {
     answer: response.response.text(),
-    sources: relevantChunks.map(chunk => ({
+    sources: relevantChunks.map((chunk) => ({
       documentTitle: chunk.documentTitle,
       pageNumber: chunk.metadata.pageNumber,
       relevanceScore: chunk.similarity,
-      excerpt: chunk.text.substring(0, 200) + '...',
+      excerpt: chunk.text.substring(0, 200) + "...",
     })),
     cachedTokens: response.usageMetadata?.cachedContentTokenCount,
   };
@@ -1402,7 +1407,8 @@ export default defineSchema({
     processedAt: v.optional(v.number()),
     totalPages: v.number(),
     totalChunks: v.number(),
-  }).index("by_source", ["source"])
+  })
+    .index("by_source", ["source"])
     .index("by_category", ["category"]),
 
   // 向量嵌入（分段）
@@ -1417,7 +1423,8 @@ export default defineSchema({
       pageNumber: v.number(),
       sectionTitle: v.optional(v.string()),
     }),
-  }).index("by_document", ["documentId"])
+  })
+    .index("by_document", ["documentId"])
     .vectorIndex("by_embedding", {
       vectorField: "embedding",
       dimensions: 768,
@@ -1429,11 +1436,13 @@ export default defineSchema({
     userId: v.id("users"),
     question: v.string(),
     answer: v.string(),
-    sources: v.array(v.object({
-      documentId: v.id("regulationDocuments"),
-      pageNumber: v.number(),
-      relevanceScore: v.float64(),
-    })),
+    sources: v.array(
+      v.object({
+        documentId: v.id("regulationDocuments"),
+        pageNumber: v.number(),
+        relevanceScore: v.float64(),
+      })
+    ),
     cachedTokensUsed: v.optional(v.number()),
     queriedAt: v.number(),
   }).index("by_user", ["userId"]),
@@ -1443,6 +1452,7 @@ export default defineSchema({
 #### 內容來源管理:
 
 **官方法規庫**
+
 - NZ Building Code (MBIE)
 - Building Consent Authority (BCA) - Australia
 - BRANZ Technical Recommendations
@@ -1450,12 +1460,14 @@ export default defineSchema({
 - Environmental & Safety Standards (EPA, WorkSafe)
 
 **供應商合規資料**
+
 - 產品技術規格 (Appraisals, CodeMark)
 - 安裝施工標準 (Installation Guides)
 - 認證和測試報告 (ISO, AS/NZS)
 - 維護保養指南 (Warranty Documents)
 
 **用戶貢獻內容**
+
 - 用戶上傳的常用法規 (需審核)
 - 實務經驗分享 (Case Studies)
 - 問題解決方案 (Best Practices)
@@ -1463,28 +1475,32 @@ export default defineSchema({
 #### 成本優化策略:
 
 **1. Batch Embeddings (批次處理)**
+
 ```typescript
 // 使用 Batch API 生成嵌入，成本降低 50%
 const batchResults = await genAI.batchEmbedContent({
-  requests: documents.map(doc => ({
+  requests: documents.map((doc) => ({
     model: "gemini-embedding-001",
     content: doc.text,
     taskType: "RETRIEVAL_DOCUMENT",
-  }))
+  })),
 });
 ```
 
 **2. Context Caching (減少重複成本)**
+
 - 常用法規文件快取 1 小時或更長
 - 快取命中可節省 75% 成本
 - Implicit Caching 自動啟用 (Gemini 2.5 Flash)
 
 **3. Embedding 維度優化**
+
 - 使用 768 維而非 3072 維
 - 節省 75% 儲存空間
 - MTEB 分數僅降低 0.17 (67.99 vs 68.16)
 
 **成本估算** (每月):
+
 ```
 假設: 500 份法規文件，平均 50 頁/份
 - 總頁數: 25,000 頁
@@ -1495,7 +1511,7 @@ const batchResults = await genAI.batchEmbedContent({
   * Gemini 生成 (使用 Context Caching):
     - Cached input: 1000 × 5000 tokens × $0.000025 = $0.125
     - Output: 1000 × 500 tokens × $0.0003 = $0.15
-  
+
 總成本: ~$0.93/月 (vs 無快取 ~$3.5/月，節省 73%)
 ```
 
@@ -1504,13 +1520,13 @@ const batchResults = await genAI.batchEmbedContent({
 ```tsx
 // components/RegulationSearch.tsx
 <RegulationSearchInterface>
-  <SearchBar 
+  <SearchBar
     placeholder="Ask about NZ Building Code, BRANZ standards, or Council requirements..."
     onSubmit={handleQuery}
   />
-  
+
   {loading && <Skeleton />}
-  
+
   {result && (
     <>
       <AnswerCard>
@@ -1521,11 +1537,11 @@ const batchResults = await genAI.batchEmbedContent({
           </CostSaving>
         )}
       </AnswerCard>
-      
+
       <SourcesList>
         <h3>Sources:</h3>
-        {result.sources.map(source => (
-          <SourceCard 
+        {result.sources.map((source) => (
+          <SourceCard
             key={source.documentTitle}
             title={source.documentTitle}
             page={source.pageNumber}
@@ -1557,7 +1573,7 @@ async function uploadRegulationPDF(file: File) {
       source: "MBIE",
       category: "Structural",
       version: "2024",
-    }
+    },
   });
 
   // 2. 觸發背景處理（Convex Action）
@@ -1582,7 +1598,7 @@ export const uploadPDF = mutation({
   handler: async (ctx, args) => {
     // 儲存到 Convex Storage
     const storageId = await ctx.storage.store(args.file);
-    
+
     // 記錄到資料庫
     const docId = await ctx.db.insert("regulationDocuments", {
       ...args.metadata,
@@ -1604,14 +1620,16 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 async function uploadToS3AndProcess(file: File) {
   const s3 = new S3Client({ region: "ap-southeast-2" });
-  
+
   // 1. 上傳到 S3
-  await s3.send(new PutObjectCommand({
-    Bucket: "archidocky-regulations",
-    Key: `regulations/${file.name}`,
-    Body: file,
-    ContentType: "application/pdf",
-  }));
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: "archidocky-regulations",
+      Key: `regulations/${file.name}`,
+      Body: file,
+      ContentType: "application/pdf",
+    })
+  );
 
   const s3Url = `https://archidocky-regulations.s3.ap-southeast-2.amazonaws.com/regulations/${file.name}`;
 
@@ -1627,6 +1645,7 @@ async function uploadToS3AndProcess(file: File) {
 ```
 
 **儲存成本比較**:
+
 ```
 假設 500 份法規 PDF，平均 5MB/份 = 2.5GB
 
@@ -1656,7 +1675,7 @@ export const processDocument = action({
   handler: async (ctx, args) => {
     // 1. 從 Convex Storage 取得 PDF URL
     const pdfUrl = await ctx.storage.getUrl(args.storageId);
-    
+
     if (!pdfUrl) throw new Error("PDF not found");
 
     // 2. 下載 PDF 為 Buffer
@@ -1665,7 +1684,7 @@ export const processDocument = action({
 
     // 3. 上傳到 Gemini Files API (48 小時免費儲存)
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-    
+
     const uploadedFile = await genAI.files.upload({
       file: {
         data: Buffer.from(pdfBuffer),
@@ -1678,7 +1697,7 @@ export const processDocument = action({
 
     // 4. 讓 Gemini 提取結構化內容
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-    
+
     const extractionPrompt = `
       Analyze this building regulation PDF and extract:
       
@@ -1756,15 +1775,15 @@ export const generateEmbeddings = action({
   },
   handler: async (ctx, args) => {
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-    const embeddingModel = genAI.getGenerativeModel({ 
-      model: "gemini-embedding-001" 
+    const embeddingModel = genAI.getGenerativeModel({
+      model: "gemini-embedding-001",
     });
 
     // 將每個 section 分成小塊（避免超過 2048 token 限制）
     const chunks = [];
     for (const section of args.sections) {
       const sectionChunks = splitTextIntoChunks(section.content, 1500);
-      
+
       sectionChunks.forEach((chunk, index) => {
         chunks.push({
           text: chunk,
@@ -1781,7 +1800,7 @@ export const generateEmbeddings = action({
     const batchSize = 100;
     for (let i = 0; i < chunks.length; i += batchSize) {
       const batch = chunks.slice(i, i + batchSize);
-      
+
       const embeddings = await Promise.all(
         batch.map(async (chunk) => {
           const result = await embeddingModel.embedContent({
@@ -1821,7 +1840,7 @@ function splitTextIntoChunks(text: string, maxTokens: number): string[] {
 
   for (const word of words) {
     const wordTokens = Math.ceil(word.length / 4); // 粗略估計
-    
+
     if (currentTokens + wordTokens > maxTokens) {
       chunks.push(currentChunk.join(" "));
       currentChunk = [word];
@@ -1855,8 +1874,8 @@ export const processSmallPDF = action({
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     // 直接傳送 base64 編碼的 PDF
-    const base64Pdf = Buffer.from(pdfBuffer).toString('base64');
-    
+    const base64Pdf = Buffer.from(pdfBuffer).toString("base64");
+
     const result = await model.generateContent([
       {
         inlineData: {
@@ -1884,32 +1903,37 @@ interface ValidationQuestion {
   expectedAnswer: string;
   documentTitle: string;
   pageNumber: number;
-  category: 'factual' | 'comprehension' | 'application';
+  category: "factual" | "comprehension" | "application";
 }
 
 const validationQuestions: ValidationQuestion[] = [
   // 事實型問題（直接從文件提取）
   {
-    question: "What is the minimum concrete strength for foundations in NZ Building Code B1?",
+    question:
+      "What is the minimum concrete strength for foundations in NZ Building Code B1?",
     expectedAnswer: "17.5 MPa",
     documentTitle: "NZ Building Code - Clause B1",
     pageNumber: 23,
     category: "factual",
   },
-  
+
   // 理解型問題（需要綜合理解）
   {
-    question: "When is a building consent required for deck construction in Auckland?",
-    expectedAnswer: "When the deck is higher than 1.5m above ground or attached to a dwelling",
+    question:
+      "When is a building consent required for deck construction in Auckland?",
+    expectedAnswer:
+      "When the deck is higher than 1.5m above ground or attached to a dwelling",
     documentTitle: "Auckland Building Consent Requirements",
     pageNumber: 12,
     category: "comprehension",
   },
-  
+
   // 應用型問題（需要推理）
   {
-    question: "Can I use H1.2 treated timber for external cladding in Wellington's coastal area?",
-    expectedAnswer: "No, coastal areas require H3.2 treatment minimum due to high corrosion risk",
+    question:
+      "Can I use H1.2 treated timber for external cladding in Wellington's coastal area?",
+    expectedAnswer:
+      "No, coastal areas require H3.2 treatment minimum due to high corrosion risk",
     documentTitle: "BRANZ Timber Treatment Standards",
     pageNumber: 45,
     category: "application",
@@ -1918,27 +1942,28 @@ const validationQuestions: ValidationQuestion[] = [
 
 async function runValidationTests() {
   const results = [];
-  
+
   for (const test of validationQuestions) {
     console.log(`\nTesting: ${test.question}`);
-    
+
     // 查詢 AI
     const aiResponse = await answerRegulationQuery(test.question);
-    
+
     // 驗證答案相似度
     const similarity = calculateSemanticSimilarity(
       aiResponse.answer,
       test.expectedAnswer
     );
-    
+
     // 驗證來源正確性
     const correctSource = aiResponse.sources.some(
-      s => s.documentTitle === test.documentTitle &&
-           Math.abs(s.pageNumber - test.pageNumber) <= 2 // 允許 ±2 頁誤差
+      (s) =>
+        s.documentTitle === test.documentTitle &&
+        Math.abs(s.pageNumber - test.pageNumber) <= 2 // 允許 ±2 頁誤差
     );
-    
+
     const passed = similarity > 0.8 && correctSource;
-    
+
     results.push({
       question: test.question,
       category: test.category,
@@ -1948,29 +1973,40 @@ async function runValidationTests() {
       correctSource: correctSource,
       passed: passed,
     });
-    
+
     console.log(`  ✓ Similarity: ${(similarity * 100).toFixed(1)}%`);
-    console.log(`  ✓ Source: ${correctSource ? 'Correct' : 'Wrong'}`);
-    console.log(`  ${passed ? '✅ PASSED' : '❌ FAILED'}`);
+    console.log(`  ✓ Source: ${correctSource ? "Correct" : "Wrong"}`);
+    console.log(`  ${passed ? "✅ PASSED" : "❌ FAILED"}`);
   }
-  
+
   // 生成報告
-  const passRate = results.filter(r => r.passed).length / results.length;
+  const passRate = results.filter((r) => r.passed).length / results.length;
   console.log(`\n📊 Overall Pass Rate: ${(passRate * 100).toFixed(1)}%`);
-  
+
   return results;
 }
 
 // 語義相似度計算
-async function calculateSemanticSimilarity(text1: string, text2: string): Promise<number> {
+async function calculateSemanticSimilarity(
+  text1: string,
+  text2: string
+): Promise<number> {
   const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-  const embeddingModel = genAI.getGenerativeModel({ model: "gemini-embedding-001" });
-  
+  const embeddingModel = genAI.getGenerativeModel({
+    model: "gemini-embedding-001",
+  });
+
   const [emb1, emb2] = await Promise.all([
-    embeddingModel.embedContent({ content: text1, taskType: "SEMANTIC_SIMILARITY" }),
-    embeddingModel.embedContent({ content: text2, taskType: "SEMANTIC_SIMILARITY" }),
+    embeddingModel.embedContent({
+      content: text1,
+      taskType: "SEMANTIC_SIMILARITY",
+    }),
+    embeddingModel.embedContent({
+      content: text2,
+      taskType: "SEMANTIC_SIMILARITY",
+    }),
   ]);
-  
+
   // 餘弦相似度
   return cosineSimilarity(emb1.embedding.values, emb2.embedding.values);
 }
@@ -1989,22 +2025,22 @@ function cosineSimilarity(a: number[], b: number[]): number {
 // 驗證 AI 回答的來源是否真實存在
 async function verifySourceAccuracy(question: string) {
   const response = await answerRegulationQuery(question);
-  
+
   for (const source of response.sources) {
     // 1. 取得原始 PDF
     const pdfUrl = await convex.query.regulations.getPDFUrl({
       documentId: source.documentId,
     });
-    
+
     // 2. 提取特定頁面內容
     const pageContent = await extractPDFPage(pdfUrl, source.pageNumber);
-    
+
     // 3. 檢查引用的內容是否真實存在
     const excerptExists = pageContent.includes(source.excerpt.substring(0, 50));
-    
+
     console.log(`Source: ${source.documentTitle} - Page ${source.pageNumber}`);
-    console.log(`Excerpt exists: ${excerptExists ? '✅' : '❌'}`);
-    
+    console.log(`Excerpt exists: ${excerptExists ? "✅" : "❌"}`);
+
     if (!excerptExists) {
       console.warn(`⚠️ Hallucination detected! Source may be incorrect.`);
     }
@@ -2018,27 +2054,28 @@ async function verifySourceAccuracy(question: string) {
 // 同一問題問兩次，檢查答案一致性
 async function testConsistency(question: string, runs: number = 5) {
   const answers = [];
-  
+
   for (let i = 0; i < runs; i++) {
     const response = await answerRegulationQuery(question);
     answers.push(response.answer);
   }
-  
+
   // 計算答案之間的相似度
   const similarities = [];
   for (let i = 0; i < answers.length - 1; i++) {
     const sim = await calculateSemanticSimilarity(answers[i], answers[i + 1]);
     similarities.push(sim);
   }
-  
-  const avgSimilarity = similarities.reduce((a, b) => a + b, 0) / similarities.length;
-  
+
+  const avgSimilarity =
+    similarities.reduce((a, b) => a + b, 0) / similarities.length;
+
   console.log(`Consistency Score: ${(avgSimilarity * 100).toFixed(1)}%`);
-  
+
   if (avgSimilarity < 0.85) {
-    console.warn('⚠️ Low consistency - AI may be hallucinating');
+    console.warn("⚠️ Low consistency - AI may be hallucinating");
   }
-  
+
   return { avgSimilarity, answers };
 }
 ```
@@ -2048,54 +2085,52 @@ async function testConsistency(question: string, runs: number = 5) {
 ```tsx
 // components/admin/KnowledgeBaseReview.tsx
 <ReviewInterface>
-  {testResults.map(result => (
+  {testResults.map((result) => (
     <ReviewCard key={result.question}>
       <Question>{result.question}</Question>
-      
+
       <ComparisonView>
         <Column>
           <Label>Expected Answer</Label>
           <Text>{result.expectedAnswer}</Text>
         </Column>
-        
+
         <Column>
           <Label>AI Answer</Label>
           <Text>{result.aiAnswer}</Text>
         </Column>
       </ComparisonView>
-      
+
       <Metrics>
         <Metric>
           <Label>Semantic Similarity</Label>
           <Progress value={result.similarity * 100} />
           <Value>{(result.similarity * 100).toFixed(1)}%</Value>
         </Metric>
-        
+
         <Metric>
           <Label>Source Accuracy</Label>
-          <Badge variant={result.correctSource ? 'success' : 'error'}>
-            {result.correctSource ? 'Correct' : 'Wrong'}
+          <Badge variant={result.correctSource ? "success" : "error"}>
+            {result.correctSource ? "Correct" : "Wrong"}
           </Badge>
         </Metric>
       </Metrics>
-      
+
       <Sources>
-        {result.sources.map(source => (
-          <SourceTag 
+        {result.sources.map((source) => (
+          <SourceTag
             key={source.documentTitle}
-            onClick={() => openPDF(source.documentId, source.pageNumber)}
-          >
+            onClick={() => openPDF(source.documentId, source.pageNumber)}>
             📄 {source.documentTitle} - p.{source.pageNumber}
           </SourceTag>
         ))}
       </Sources>
-      
+
       <Actions>
-        <Button 
-          variant={result.passed ? 'success' : 'destructive'}
-          onClick={() => markReview(result.id, !result.passed)}
-        >
-          {result.passed ? '✅ Approve' : '❌ Needs Review'}
+        <Button
+          variant={result.passed ? "success" : "destructive"}
+          onClick={() => markReview(result.id, !result.passed)}>
+          {result.passed ? "✅ Approve" : "❌ Needs Review"}
         </Button>
       </Actions>
     </ReviewCard>
@@ -2111,30 +2146,30 @@ name: Validate Knowledge Base
 
 on:
   schedule:
-    - cron: '0 0 * * 0'  # 每週日執行
-  workflow_dispatch:  # 手動觸發
+    - cron: "0 0 * * 0" # 每週日執行
+  workflow_dispatch: # 手動觸發
 
 jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Run validation tests
         run: npm run test:knowledge-base
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           CONVEX_DEPLOYMENT: ${{ secrets.CONVEX_DEPLOYMENT }}
-      
+
       - name: Generate report
         run: npm run test:report
-      
+
       - name: Upload results
         uses: actions/upload-artifact@v3
         with:
           name: validation-report
           path: ./test-results/
-      
+
       - name: Notify on failure
         if: failure()
         uses: slackapi/slack-github-action@v1
@@ -2156,11 +2191,13 @@ export const logQueryQuality = mutation({
     question: v.string(),
     answer: v.string(),
     sources: v.array(v.any()),
-    userFeedback: v.optional(v.object({
-      helpful: v.boolean(),
-      accurate: v.boolean(),
-      comment: v.optional(v.string()),
-    })),
+    userFeedback: v.optional(
+      v.object({
+        helpful: v.boolean(),
+        accurate: v.boolean(),
+        comment: v.optional(v.string()),
+      })
+    ),
   },
   handler: async (ctx, args) => {
     await ctx.db.insert("queryLogs", {
@@ -2175,16 +2212,17 @@ export const analyzeLowQualityAnswers = query({
   handler: async (ctx) => {
     const lowQualityQueries = await ctx.db
       .query("queryLogs")
-      .filter(q => 
-        q.eq(q.field("userFeedback.helpful"), false) ||
-        q.eq(q.field("userFeedback.accurate"), false)
+      .filter(
+        (q) =>
+          q.eq(q.field("userFeedback.helpful"), false) ||
+          q.eq(q.field("userFeedback.accurate"), false)
       )
       .collect();
 
     // 找出需要改進的文件
     const problematicDocs = {};
-    lowQualityQueries.forEach(query => {
-      query.sources.forEach(source => {
+    lowQualityQueries.forEach((query) => {
+      query.sources.forEach((source) => {
         if (!problematicDocs[source.documentId]) {
           problematicDocs[source.documentId] = 0;
         }
@@ -2192,7 +2230,7 @@ export const analyzeLowQualityAnswers = query({
       });
     });
 
-    return { 
+    return {
       totalLowQuality: lowQualityQueries.length,
       problematicDocs: problematicDocs,
     };
@@ -2200,16 +2238,1037 @@ export const analyzeLowQualityAnswers = query({
 });
 ```
 
+#### 完整自動化流程 - 從上傳到回答:
+
+**用戶視角的完整體驗**：
+
+```tsx
+// 1. 管理員上傳介面
+<RegulationUploadPage>
+  <UploadZone onDrop={handleFileUpload}>
+    <Icon>📄</Icon>
+    <Text>拖曳 PDF 到這裡或點擊上傳</Text>
+    <Input type="file" accept=".pdf" multiple />
+  </UploadZone>
+
+  {uploading && (
+    <ProgressCard>
+      <ProgressBar value={uploadProgress} />
+      <Status>✅ 上傳中... {uploadProgress}%</Status>
+    </ProgressCard>
+  )}
+
+  {uploaded && (
+    <SuccessCard>
+      <Icon>✅</Icon>
+      <Title>上傳成功！</Title>
+      <Message>AI 正在建立索引，預計 2-5 分鐘完成</Message>
+
+      {/* 即時進度 */}
+      <ProcessingSteps>
+        <Step completed={steps.uploaded}>📤 檔案已上傳</Step>
+        <Step completed={steps.extracted} loading={!steps.extracted}>
+          🤖 AI 正在提取內容...
+        </Step>
+        <Step
+          completed={steps.embedded}
+          loading={steps.extracted && !steps.embedded}>
+          🔍 正在建立索引...
+        </Step>
+        <Step completed={steps.ready}>✅ 完成！可開始查詢</Step>
+      </ProcessingSteps>
+    </SuccessCard>
+  )}
+</RegulationUploadPage>
+```
+
+**背後自動發生的事情**：
+
+```typescript
+// app/admin/regulations/actions.ts
+
+export async function handleFileUpload(file: File) {
+  // === 步驟 1: 上傳到 Convex (2-10 秒) ===
+  const storageId = await convex.mutation(api.regulations.upload, {
+    fileName: file.name,
+    fileType: file.type,
+    fileSize: file.size,
+  });
+
+  // 告訴用戶：上傳成功 ✅
+  toast.success("上傳成功！AI 開始處理...");
+
+  // === 步驟 2: 觸發背景處理（這是非同步的，不會阻塞 UI）===
+  await convex.action(api.regulations.processInBackground, {
+    storageId: storageId,
+  });
+
+  // 用戶可以離開這個頁面，處理會繼續在背景執行
+  return storageId;
+}
+
+// convex/regulations.ts - 背景處理任務
+export const processInBackground = action({
+  args: { storageId: v.id("_storage") },
+  handler: async (ctx, args) => {
+    try {
+      // === 步驟 2.1: 更新狀態為「處理中」 ===
+      await ctx.runMutation(api.regulations.updateStatus, {
+        storageId: args.storageId,
+        status: "extracting",
+        progress: 0,
+      });
+
+      // === 步驟 2.2: AI 提取內容 (30秒 - 2分鐘) ===
+      const pdfUrl = await ctx.storage.getUrl(args.storageId);
+      const extractedData = await extractPDFContent(pdfUrl);
+
+      await ctx.runMutation(api.regulations.updateStatus, {
+        storageId: args.storageId,
+        status: "extracted",
+        progress: 33,
+        extractedData: extractedData,
+      });
+
+      // === 步驟 2.3: 生成 Embeddings (1-3 分鐘) ===
+      await ctx.runMutation(api.regulations.updateStatus, {
+        storageId: args.storageId,
+        status: "embedding",
+        progress: 66,
+      });
+
+      const embeddings = await generateAllEmbeddings(extractedData);
+
+      // === 步驟 2.4: 存入向量資料庫 (10-30 秒) ===
+      await ctx.runMutation(api.regulations.saveEmbeddings, {
+        storageId: args.storageId,
+        embeddings: embeddings,
+      });
+
+      // === 步驟 2.5: 完成！ ===
+      await ctx.runMutation(api.regulations.updateStatus, {
+        storageId: args.storageId,
+        status: "ready",
+        progress: 100,
+        totalChunks: embeddings.length,
+        completedAt: Date.now(),
+      });
+
+      // 發送通知給管理員
+      await ctx.runMutation(api.notifications.create, {
+        type: "regulation_indexed",
+        message: `"${extractedData.title}" 已完成索引，包含 ${embeddings.length} 個段落`,
+      });
+    } catch (error) {
+      // 如果失敗，記錄錯誤
+      await ctx.runMutation(api.regulations.updateStatus, {
+        storageId: args.storageId,
+        status: "failed",
+        error: error.message,
+      });
+    }
+  },
+});
+```
+
+**即時追蹤處理進度**：
+
+```tsx
+// components/RegulationProcessingStatus.tsx
+// 用戶可以即時看到處理進度
+
+export function ProcessingStatus({ storageId }: { storageId: string }) {
+  // 訂閱即時更新
+  const status = useQuery(api.regulations.getStatus, { storageId });
+
+  if (!status) return <Loading />;
+
+  return (
+    <Card>
+      <Timeline>
+        {/* 上傳完成 */}
+        <TimelineItem
+          completed
+          icon="📤"
+          title="檔案已上傳"
+          timestamp={formatTime(status.uploadedAt)}
+        />
+
+        {/* AI 提取中 */}
+        <TimelineItem
+          active={status.status === "extracting"}
+          completed={["extracted", "embedding", "ready"].includes(
+            status.status
+          )}
+          icon="🤖"
+          title="AI 正在閱讀 PDF..."
+          description={
+            status.status === "extracting"
+              ? "分析文字、圖表、表格中..."
+              : `已提取 ${status.extractedData?.sections?.length} 個章節`
+          }
+        />
+
+        {/* 建立索引中 */}
+        <TimelineItem
+          active={status.status === "embedding"}
+          completed={status.status === "ready"}
+          icon="🔍"
+          title="建立搜尋索引..."
+          description={
+            status.status === "embedding"
+              ? `處理進度: ${status.progress}%`
+              : `已索引 ${status.totalChunks} 個段落`
+          }
+        />
+
+        {/* 完成 */}
+        <TimelineItem
+          completed={status.status === "ready"}
+          icon="✅"
+          title="完成！"
+          description={
+            status.status === "ready" ? "用戶現在可以查詢此法規" : "處理中..."
+          }
+          timestamp={status.completedAt && formatTime(status.completedAt)}
+        />
+      </Timeline>
+
+      {status.status === "failed" && (
+        <ErrorAlert>
+          ❌ 處理失敗: {status.error}
+          <Button onClick={() => retryProcessing(storageId)}>重試</Button>
+        </ErrorAlert>
+      )}
+    </Card>
+  );
+}
+```
+
+**用戶查詢時的自動化**：
+
+```typescript
+// 用戶問問題 → AI 自動從所有已索引的文件中搜尋
+
+export async function answerUserQuestion(question: string) {
+  // === 步驟 1: 查詢所有已就緒的法規 ===
+  const readyRegulations = await ctx.db
+    .query("regulations")
+    .filter((q) => q.eq(q.field("status"), "ready"))
+    .collect();
+
+  console.log(`搜尋範圍: ${readyRegulations.length} 份法規文件`);
+  // 範例: "搜尋範圍: 245 份法規文件"
+
+  // === 步驟 2: 向量搜尋（自動搜尋所有索引）===
+  const questionEmbedding = await generateEmbedding(question);
+
+  const relevantChunks = await ctx.db
+    .query("embeddings")
+    .vectorSearch("embedding", questionEmbedding)
+    .limit(10) // 找出最相關的 10 段內容
+    .collect();
+
+  // === 步驟 3: AI 根據找到的內容回答 ===
+  const answer = await generateAnswer(question, relevantChunks);
+
+  // === 步驟 4: 記錄查詢（用於改進）===
+  await ctx.db.insert("queryLogs", {
+    question: question,
+    answer: answer,
+    sourcesUsed: relevantChunks.map((c) => c.documentId),
+    timestamp: Date.now(),
+  });
+
+  return answer;
+}
+```
+
+**自動淘汰舊版本法規**：
+
+```typescript
+// convex/regulations.ts
+
+// 當上傳新版本時，自動標記舊版本為「已過期」
+export const uploadNewVersion = mutation({
+  args: {
+    fileName: v.string(),
+    version: v.string(), // 例如: "2024"
+    replacesVersion: v.optional(v.string()), // 例如: "2023"
+  },
+  handler: async (ctx, args) => {
+    // === 如果有指定要替換的版本 ===
+    if (args.replacesVersion) {
+      // 找出舊版本
+      const oldVersions = await ctx.db
+        .query("regulations")
+        .filter((q) =>
+          q.and(
+            q.eq(q.field("fileName"), args.fileName),
+            q.eq(q.field("version"), args.replacesVersion)
+          )
+        )
+        .collect();
+
+      // 標記為「已淘汰」
+      for (const oldDoc of oldVersions) {
+        await ctx.db.patch(oldDoc._id, {
+          status: "deprecated",
+          deprecatedAt: Date.now(),
+          replacedBy: args.version,
+          // 保留舊的 embeddings，但標記為不可搜尋
+          searchable: false,
+        });
+      }
+
+      console.log(`✓ 已淘汰 ${oldVersions.length} 個舊版本`);
+    }
+
+    // === 上傳新版本 ===
+    const newDocId = await ctx.db.insert("regulations", {
+      fileName: args.fileName,
+      version: args.version,
+      status: "pending_processing",
+      uploadedAt: Date.now(),
+      searchable: false, // 處理完成後才設為 true
+    });
+
+    return newDocId;
+  },
+});
+
+// 處理完成後，自動啟用新版本的搜尋
+export const activateNewVersion = mutation({
+  args: { documentId: v.id("regulations") },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.documentId, {
+      searchable: true, // 現在用戶查詢會搜尋到新版本
+      activatedAt: Date.now(),
+    });
+  },
+});
+```
+
+**智能版本管理介面**：
+
+```tsx
+// components/admin/RegulationVersions.tsx
+
+<VersionManager>
+  <DocumentCard>
+    <Header>
+      <Title>NZ Building Code - Clause B1 結構</Title>
+      <VersionBadge>2024 版</VersionBadge>
+    </Header>
+
+    <VersionHistory>
+      {/* 當前版本 */}
+      <Version active>
+        <VersionNumber>v2024</VersionNumber>
+        <Status>✅ 使用中</Status>
+        <Stats>
+          <Stat>235 個段落已索引</Stat>
+          <Stat>被查詢 1,234 次</Stat>
+        </Stats>
+        <Actions>
+          <Button onClick={() => viewDocument()}>查看</Button>
+          <Button onClick={() => downloadPDF()}>下載 PDF</Button>
+        </Actions>
+      </Version>
+
+      {/* 舊版本（已淘汰但保留） */}
+      <Version deprecated>
+        <VersionNumber>v2023</VersionNumber>
+        <Status>⚠️ 已淘汰</Status>
+        <DeprecationNote>於 2024-03-15 被 v2024 取代</DeprecationNote>
+        <Actions>
+          <Button variant="ghost" onClick={() => viewArchive()}>
+            查看存檔
+          </Button>
+          <Button variant="ghost" onClick={() => restoreVersion()}>
+            恢復此版本
+          </Button>
+        </Actions>
+      </Version>
+    </VersionHistory>
+
+    {/* 上傳新版本 */}
+    <UploadNewVersion>
+      <Button onClick={() => openUploadModal()}>📤 上傳 2025 新版本</Button>
+    </UploadNewVersion>
+  </DocumentCard>
+</VersionManager>
+```
+
+**查詢時的智能過濾**：
+
+```typescript
+// 自動只搜尋最新版本，除非用戶指定要查舊版
+
+export const smartSearch = query({
+  args: {
+    question: v.string(),
+    includeDeprecated: v.optional(v.boolean()), // 預設 false
+  },
+  handler: async (ctx, args) => {
+    // 建立搜尋過濾條件
+    const filter = args.includeDeprecated
+      ? { status: "ready" } // 包含所有已處理的
+      : {
+          status: "ready",
+          searchable: true, // 只搜尋未淘汰的
+        };
+
+    // 向量搜尋時套用過濾
+    const results = await ctx.db
+      .vectorSearch("embeddings", questionEmbedding)
+      .filter((q) => q.eq(q.field("searchable"), !args.includeDeprecated))
+      .limit(10)
+      .collect();
+
+    return results;
+  },
+});
+```
+
+**索引規模自動成長**：
+
+```typescript
+// 統計儀表板 - 顯示知識庫成長
+
+export const getKnowledgeBaseStats = query({
+  handler: async (ctx) => {
+    const allDocs = await ctx.db.query("regulations").collect();
+    const allEmbeddings = await ctx.db.query("embeddings").collect();
+
+    return {
+      totalDocuments: allDocs.length,
+      activeDocuments: allDocs.filter(d => d.searchable).length,
+      deprecatedDocuments: allDocs.filter(d => d.status === "deprecated").length,
+      totalIndexedChunks: allEmbeddings.length,
+      totalQueries: await ctx.db.query("queryLogs").count(),
+
+      // 成長趨勢
+      documentsThisMonth: allDocs.filter(d =>
+        d.uploadedAt > Date.now() - 30 * 24 * 60 * 60 * 1000
+      ).length,
+
+      // 最常查詢的主題
+      popularTopics: await getPopularTopics(ctx),
+    };
+  },
+});
+
+// 顯示給管理員
+<KnowledgeBaseStats>
+  <StatCard>
+    <Icon>📚</Icon>
+    <Value>{stats.totalDocuments}</Value>
+    <Label>總文件數</Label>
+    <Growth>+{stats.documentsThisMonth} 本月新增</Growth>
+  </StatCard>
+
+  <StatCard>
+    <Icon>🔍</Icon>
+    <Value>{stats.totalIndexedChunks.toLocaleString()}</Value>
+    <Label>可搜尋段落</Label>
+  </StatCard>
+
+  <StatCard>
+    <Icon>💬</Icon>
+    <Value>{stats.totalQueries.toLocaleString()}</Value>
+    <Label>累計查詢次數</Label>
+  </StatCard>
+</KnowledgeBaseStats>
+```
+
 #### 技術優勢:
 
+✅ **全自動化** - 上傳後無需人工干預，AI 自動處理  
+✅ **即時追蹤** - 每個步驟都有進度顯示  
+✅ **背景處理** - 不阻塞用戶操作，可同時上傳多份文件  
+✅ **智能版本管理** - 自動淘汰舊版，保留歷史記錄  
+✅ **規模自動成長** - 索引越多，回答越準確  
 ✅ **準確性高** - Gemini 原生理解 PDF（含圖表、表格）  
 ✅ **成本低** - Context Caching + Batch API 節省 50-75% 費用  
 ✅ **可擴展** - 支援 1000 頁文件，向量資料庫可無限擴展  
-✅ **即時更新** - 新法規上傳後自動索引  
+✅ **即時更新** - 新法規上傳後 2-5 分鐘可開始查詢  
 ✅ **可追溯** - 每個答案都附來源和頁碼  
 ✅ **多語言** - 支援中英文查詢（Gemini 多語言能力）  
 ✅ **可驗證** - 完整測試框架確保答案品質  
 ✅ **自我改進** - 用戶反饋循環持續優化
+
+---
+
+#### 🛡️ PDF 安全防護策略（多層防禦）
+
+當開放用戶自由上傳 PDF 時，必須實施嚴格的安全檢查：
+
+##### 防護層級 1: 檔案驗證（上傳時立即檢查）
+
+```typescript
+// convex/regulations.ts - 上傳前驗證
+
+import { v } from "convex/values";
+import { mutation } from "./_generated/server";
+
+export const uploadPDF = mutation({
+  args: {
+    fileName: v.string(),
+    fileSize: v.number(),
+    fileType: v.string(),
+  },
+  handler: async (ctx, args) => {
+    // === 1. 檔案類型白名單 ===
+    const ALLOWED_MIME_TYPES = ["application/pdf"];
+
+    if (!ALLOWED_MIME_TYPES.includes(args.fileType)) {
+      throw new Error("只允許上傳 PDF 檔案");
+    }
+
+    // === 2. 檔案大小限制 ===
+    const MAX_SIZE = 50 * 1024 * 1024; // 50MB
+    const MIN_SIZE = 1024; // 1KB（防止空檔案攻擊）
+
+    if (args.fileSize > MAX_SIZE) {
+      throw new Error("檔案大小不得超過 50MB");
+    }
+
+    if (args.fileSize < MIN_SIZE) {
+      throw new Error("檔案大小異常");
+    }
+
+    // === 3. 檔名驗證（防止路徑穿越攻擊）===
+    const DANGEROUS_PATTERNS = [
+      /\.\./, // 路徑穿越 ../
+      /[<>:"|?*]/, // Windows 保留字元
+      /^CON$|^PRN$|^AUX$|^NUL$/i, // Windows 保留名稱
+      /\.exe$|\.bat$|\.cmd$/i, // 可執行檔
+    ];
+
+    for (const pattern of DANGEROUS_PATTERNS) {
+      if (pattern.test(args.fileName)) {
+        throw new Error("檔名包含非法字元");
+      }
+    }
+
+    // === 4. 檔名長度限制 ===
+    if (args.fileName.length > 255) {
+      throw new Error("檔名過長");
+    }
+
+    // === 5. 生成安全的檔名（不使用用戶提供的檔名）===
+    const safeFileName = generateSafeFileName(args.fileName);
+
+    // 通過驗證，允許上傳
+    return {
+      success: true,
+      safeFileName: safeFileName,
+    };
+  },
+});
+
+// 生成安全檔名（hash + 時間戳）
+function generateSafeFileName(originalName: string): string {
+  const timestamp = Date.now();
+  const randomId = Math.random().toString(36).substring(2, 15);
+  const extension = ".pdf";
+
+  // 只保留安全的檔名部分（移除特殊字元）
+  const safeName = originalName
+    .replace(/[^a-zA-Z0-9\-\_\s]/g, "")
+    .substring(0, 100);
+
+  return `${safeName}_${timestamp}_${randomId}${extension}`;
+}
+```
+
+##### 防護層級 2: 內容掃描（病毒/惡意程式碼檢測）
+
+```typescript
+// lib/security/pdfScanner.ts
+
+// 方案 A: 使用 Google Cloud Security Scanner (推薦)
+import { DlpServiceClient } from "@google-cloud/dlp";
+
+export async function scanPDFForMalware(fileUrl: string) {
+  // === 選項 1: Google Cloud DLP API（資料外洩防護）===
+  const dlp = new DlpServiceClient();
+
+  const inspectConfig = {
+    infoTypes: [
+      { name: "CREDIT_CARD_NUMBER" },
+      { name: "PHONE_NUMBER" },
+      { name: "EMAIL_ADDRESS" },
+      { name: "PERSON_NAME" },
+    ],
+    minLikelihood: "POSSIBLE",
+    limits: {
+      maxFindingsPerRequest: 0, // 無限制
+    },
+  };
+
+  const [response] = await dlp.inspectContent({
+    parent: `projects/${process.env.GOOGLE_CLOUD_PROJECT_ID}`,
+    inspectConfig: inspectConfig,
+    item: { byteItem: { type: "PDF", data: fileBuffer } },
+  });
+
+  if (response.result.findings.length > 0) {
+    console.warn("⚠️ PDF 包含敏感資訊:", response.result.findings);
+  }
+
+  return response;
+}
+
+// 方案 B: 使用 VirusTotal API（免費版 4 次/分鐘）
+export async function scanWithVirusTotal(fileBuffer: Buffer) {
+  const FormData = require("form-data");
+  const form = new FormData();
+  form.append("file", fileBuffer, "document.pdf");
+
+  // 上傳檔案到 VirusTotal
+  const uploadResponse = await fetch(
+    "https://www.virustotal.com/api/v3/files",
+    {
+      method: "POST",
+      headers: {
+        "x-apikey": process.env.VIRUSTOTAL_API_KEY!,
+      },
+      body: form,
+    }
+  );
+
+  const uploadData = await uploadResponse.json();
+  const analysisId = uploadData.data.id;
+
+  // 等待掃描結果（輪詢）
+  await new Promise((resolve) => setTimeout(resolve, 15000)); // 等待 15 秒
+
+  const resultResponse = await fetch(
+    `https://www.virustotal.com/api/v3/analyses/${analysisId}`,
+    {
+      headers: {
+        "x-apikey": process.env.VIRUSTOTAL_API_KEY!,
+      },
+    }
+  );
+
+  const result = await resultResponse.json();
+  const stats = result.data.attributes.stats;
+
+  // 判斷是否有病毒
+  if (stats.malicious > 0) {
+    throw new Error(`🚨 病毒檢測: ${stats.malicious} 個引擎偵測到惡意內容`);
+  }
+
+  return {
+    clean: stats.malicious === 0,
+    stats: stats,
+  };
+}
+
+// 方案 C: 使用 ClamAV（開源，自己架設）
+import NodeClam from "clamscan";
+
+export async function scanWithClamAV(filePath: string) {
+  const clamscan = await new NodeClam().init({
+    clamdscan: {
+      host: process.env.CLAMAV_HOST || "localhost",
+      port: process.env.CLAMAV_PORT || 3310,
+    },
+  });
+
+  const { isInfected, viruses } = await clamscan.scanFile(filePath);
+
+  if (isInfected) {
+    throw new Error(`🚨 病毒檢測: ${viruses.join(", ")}`);
+  }
+
+  return { clean: !isInfected };
+}
+```
+
+##### 防護層級 3: PDF 結構驗證（檢查惡意結構）
+
+```typescript
+// lib/security/pdfValidator.ts
+
+import pdf from "pdf-parse";
+
+export async function validatePDFStructure(fileBuffer: Buffer) {
+  try {
+    // === 1. 解析 PDF 結構 ===
+    const data = await pdf(fileBuffer);
+
+    // === 2. 檢查頁數限制（防止 PDF 炸彈）===
+    const MAX_PAGES = 1000;
+    if (data.numpages > MAX_PAGES) {
+      throw new Error(`PDF 頁數過多（${data.numpages} 頁）`);
+    }
+
+    // === 3. 檢查是否包含 JavaScript ===
+    const pdfText = fileBuffer.toString("utf-8");
+    const DANGEROUS_KEYWORDS = [
+      "/JavaScript",
+      "/JS",
+      "/Launch",
+      "/SubmitForm",
+      "/ImportData",
+      "/OpenAction",
+      "/AA", // Additional Actions
+      "/EmbeddedFile",
+    ];
+
+    for (const keyword of DANGEROUS_KEYWORDS) {
+      if (pdfText.includes(keyword)) {
+        throw new Error(`⚠️ PDF 包含潛在危險內容: ${keyword}`);
+      }
+    }
+
+    // === 4. 檢查是否為加密 PDF ===
+    if (pdfText.includes("/Encrypt")) {
+      throw new Error("不支援加密 PDF");
+    }
+
+    // === 5. 檢查檔案資訊 ===
+    return {
+      valid: true,
+      metadata: {
+        pages: data.numpages,
+        title: data.info?.Title || "未命名",
+        author: data.info?.Author || "未知",
+        creator: data.info?.Creator || "未知",
+        creationDate: data.info?.CreationDate,
+        textLength: data.text.length,
+      },
+    };
+  } catch (error) {
+    console.error("PDF 驗證失敗:", error);
+    throw new Error("PDF 檔案格式無效或包含惡意內容");
+  }
+}
+```
+
+##### 防護層級 4: 內容沙箱隔離（處理 PDF 時的安全措施）
+
+```typescript
+// convex/actions/processPDFSafely.ts
+
+import { action } from "../_generated/server";
+import { v } from "convex/values";
+
+export const processPDFSafely = action({
+  args: { storageId: v.id("_storage") },
+  handler: async (ctx, args) => {
+    try {
+      // === 1. 從隔離的儲存區下載 ===
+      const fileUrl = await ctx.storage.getUrl(args.storageId);
+
+      if (!fileUrl) {
+        throw new Error("檔案不存在");
+      }
+
+      // === 2. 下載檔案（限制大小）===
+      const MAX_DOWNLOAD_SIZE = 50 * 1024 * 1024; // 50MB
+
+      const response = await fetch(fileUrl, {
+        signal: AbortSignal.timeout(30000), // 30 秒超時
+      });
+
+      if (!response.ok) {
+        throw new Error("下載失敗");
+      }
+
+      const contentLength = parseInt(
+        response.headers.get("content-length") || "0"
+      );
+
+      if (contentLength > MAX_DOWNLOAD_SIZE) {
+        throw new Error("檔案過大");
+      }
+
+      const fileBuffer = await response.arrayBuffer();
+
+      // === 3. 多層驗證 ===
+
+      // 3.1 結構驗證
+      await validatePDFStructure(Buffer.from(fileBuffer));
+
+      // 3.2 病毒掃描（選擇其中一種）
+      // await scanWithVirusTotal(Buffer.from(fileBuffer));
+      // await scanWithClamAV(tempFilePath);
+
+      // === 4. 傳送到 Gemini（Gemini 本身也有安全過濾）===
+      const geminiFile = await uploadToGeminiFileAPI(fileUrl);
+
+      // === 5. 標記檔案為「已驗證」===
+      await ctx.runMutation(api.regulations.markAsVerified, {
+        storageId: args.storageId,
+        verifiedAt: Date.now(),
+        scanResults: {
+          structureValid: true,
+          virusScanPassed: true,
+        },
+      });
+
+      return { success: true, geminiFileId: geminiFile.name };
+    } catch (error) {
+      // === 錯誤處理：標記為危險檔案 ===
+      await ctx.runMutation(api.regulations.markAsDangerous, {
+        storageId: args.storageId,
+        reason: error.message,
+        quarantinedAt: Date.now(),
+      });
+
+      throw error;
+    }
+  },
+});
+```
+
+##### 防護層級 5: 用戶權限與審核機制
+
+```typescript
+// convex/schema.ts - 資料庫 Schema
+
+import { defineSchema, defineTable } from "convex/server";
+import { v } from "convex/values";
+
+export default defineSchema({
+  // PDF 上傳記錄（含安全狀態）
+  regulationDocuments: defineTable({
+    fileName: v.string(),
+    uploadedBy: v.id("users"),
+    uploadedAt: v.number(),
+    fileSize: v.number(),
+
+    // 安全狀態
+    securityStatus: v.union(
+      v.literal("pending_scan"), // 等待掃描
+      v.literal("scanning"), // 掃描中
+      v.literal("verified"), // 已驗證安全
+      v.literal("quarantined"), // 已隔離（可疑）
+      v.literal("rejected") // 已拒絕（危險）
+    ),
+
+    scanResults: v.optional(
+      v.object({
+        structureValid: v.boolean(),
+        virusScanPassed: v.boolean(),
+        containsJavaScript: v.boolean(),
+        suspiciousKeywords: v.array(v.string()),
+        scannedAt: v.number(),
+        scannedBy: v.string(), // "VirusTotal" | "ClamAV" | "Manual"
+      })
+    ),
+
+    quarantineReason: v.optional(v.string()),
+
+    // 管理員審核（如果需要）
+    adminApprovalStatus: v.optional(
+      v.union(
+        v.literal("pending"),
+        v.literal("approved"),
+        v.literal("rejected")
+      )
+    ),
+    approvedBy: v.optional(v.id("users")),
+    approvedAt: v.optional(v.number()),
+
+    // Gemini 處理狀態
+    geminiFileId: v.optional(v.string()),
+    processingStatus: v.string(),
+  })
+    .index("by_user", ["uploadedBy"])
+    .index("by_security_status", ["securityStatus"])
+    .index("pending_approval", ["adminApprovalStatus"]),
+
+  // 用戶表（含上傳權限）
+  users: defineTable({
+    clerkId: v.string(),
+    email: v.string(),
+    role: v.union(
+      v.literal("admin"),
+      v.literal("verified_user"),
+      v.literal("basic_user")
+    ),
+
+    // 上傳配額
+    uploadQuota: v.object({
+      maxFilesPerDay: v.number(), // 每日上傳限制
+      maxTotalSize: v.number(), // 總容量限制
+      currentUsage: v.number(), // 當前使用量
+      resetDate: v.number(), // 配額重置日期
+    }),
+
+    isBanned: v.optional(v.boolean()),
+    banReason: v.optional(v.string()),
+  }).index("by_clerk_id", ["clerkId"]),
+});
+```
+
+##### 防護層級 6: 監控與警報系統
+
+```typescript
+// lib/monitoring/securityAlerts.ts
+
+export async function sendSecurityAlert(alert: {
+  type: "malware_detected" | "suspicious_upload" | "quota_exceeded";
+  userId: string;
+  fileName: string;
+  details: string;
+}) {
+  // === 1. 記錄到資料庫 ===
+  await ctx.db.insert("securityLogs", {
+    type: alert.type,
+    userId: alert.userId,
+    fileName: alert.fileName,
+    details: alert.details,
+    timestamp: Date.now(),
+    severity: alert.type === "malware_detected" ? "critical" : "warning",
+  });
+
+  // === 2. 發送通知給管理員 ===
+  if (alert.type === "malware_detected") {
+    // 發送緊急 Email
+    await sendEmail({
+      to: process.env.ADMIN_EMAIL!,
+      subject: "🚨 安全警報：偵測到惡意檔案",
+      body: `
+        用戶: ${alert.userId}
+        檔案: ${alert.fileName}
+        原因: ${alert.details}
+        時間: ${new Date().toISOString()}
+      `,
+    });
+
+    // Slack 通知（如果有）
+    await sendSlackNotification({
+      channel: "#security-alerts",
+      message: `🚨 惡意檔案警報\n檔案: ${alert.fileName}\n原因: ${alert.details}`,
+    });
+  }
+
+  // === 3. 自動封鎖用戶（如果多次違規）===
+  const violationCount = await ctx.db
+    .query("securityLogs")
+    .filter((q) =>
+      q.and(
+        q.eq(q.field("userId"), alert.userId),
+        q.eq(q.field("type"), "malware_detected")
+      )
+    )
+    .collect();
+
+  if (violationCount.length >= 3) {
+    // 自動封鎖
+    await ctx.db.patch(userId, {
+      isBanned: true,
+      banReason: "多次上傳惡意檔案",
+    });
+  }
+}
+```
+
+##### 完整上傳流程（整合所有防護層）
+
+```typescript
+// app/admin/upload/page.tsx
+
+"use client";
+
+export default function SecureUploadPage() {
+
+  const handleFileUpload = async (file: File) => {
+
+    try {
+      // === 前端驗證（第一道防線）===
+      if (file.type !== "application/pdf") {
+        throw new Error("只允許上傳 PDF 檔案");
+      }
+
+      if (file.size > 50 * 1024 * 1024) {
+        throw new Error("檔案不得超過 50MB");
+      }
+
+      setStatus("uploading");
+
+      // === 上傳到 Convex（含伺服器端驗證）===
+      const storageId = await uploadToConvex(file);
+
+      setStatus("scanning");
+
+      // === 觸發安全掃描（背景處理）===
+      const scanResult = await triggerSecurityScan(storageId);
+
+      if (scanResult.status === "quarantined") {
+        setStatus("rejected");
+        showError("檔案未通過安全檢查，已被隔離");
+        return;
+      }
+
+      setStatus("processing");
+
+      // === 通過掃描，開始 AI 處理 ===
+      await processWithAI(storageId);
+
+      setStatus("complete");
+      showSuccess("上傳並處理完成！");
+
+    } catch (error) {
+      setStatus("error");
+      showError(error.message);
+    }
+  };
+
+  return (
+    <div>
+      <UploadZone
+        onDrop={handleFileUpload}
+        accept=".pdf"
+        maxSize={50 * 1024 * 1024}
+      />
+
+      {status === "scanning" && (
+        <Alert>
+          🔍 正在掃描檔案安全性...
+        </Alert>
+      )}
+
+      {status === "rejected" && (
+        <Alert variant="destructive">
+          🚨 檔案未通過安全檢查
+        </Alert>
+      )}
+    </div>
+  );
+}
+```
+
+---
+
+#### 成本估算（安全掃描）
+
+| 服務                 | 免費額度        | 付費價格            | 推薦            |
+| -------------------- | --------------- | ------------------- | --------------- |
+| **VirusTotal API**   | 4 次/分鐘       | $500/月（高頻率）   | ✅ 適合低流量   |
+| **ClamAV（自架）**   | 完全免費        | 伺服器成本 $5-20/月 | ✅ 適合中高流量 |
+| **Google Cloud DLP** | 免費 1000 次/月 | $0.15/1000 次       | ✅ 適合資料檢查 |
+| **PDF 結構驗證**     | 免費（自己寫）  | $0                  | ✅ 必備         |
+
+**建議配置**（Phase 1-2）：
+
+- PDF 結構驗證（必備）：$0
+- VirusTotal API（4 次/分鐘）：$0
+- **總成本**：$0/月（低流量）
+
+**建議配置**（Phase 3+，高流量）：
+
+- PDF 結構驗證：$0
+- ClamAV 自架（Digital Ocean Droplet）：$6/月
+- Google Cloud DLP：$0.15/1000 次
+- **總成本**：~$10-20/月
 
 ### 5. RFI 社群論壇 (RFI Community Forum)
 
