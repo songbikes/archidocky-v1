@@ -214,7 +214,7 @@ async function restoreVersion(versionId: string) {
 
 **技術實現**:
 
-- PDF 引擎: PDF.js 或 PSPDFKit
+- PDF 引擎: PDF.js 或 PSPDFKit (or Nutrient PDF? https://www.nutrient.io/sdk/?utm_term=nutrient%20pdf%20sdk&utm_campaign=Nutrient+%7C+Search+%7C+Branded+%7C+New&utm_source=google&utm_medium=cpc&hsa_acc=1671752682&hsa_cam=22738932846&hsa_grp=182420287152&hsa_ad=761559093240&hsa_src=g&hsa_tgt=kwd-2402638830366&hsa_kw=nutrient%20pdf%20sdk&hsa_mt=e&hsa_net=adwords&hsa_ver=3&gad_source=1&gad_campaignid=22738932846&gbraid=0AAAAA-PwGiIA1ZIFhHwppVl2aL0DJNsMv&gclid=Cj0KCQiAubrJBhCbARIsAHIdxD9amwghBG8L5IRVjo9tZut--GNMKSXImTPbeZRqD_Jv9eJAKdDI41QaAkrZEALw_wcB)
 - 即時協作: Convex Real-time
 - 檔案處理: PDF-lib
 - 畫布操作: Fabric.js 或 Konva.js
@@ -548,9 +548,9 @@ export const metadata = {
 
 - 用戶可自由選擇文字顏色和背景顏色
 - 提供完整的色彩選擇器 (Full Color Palette)
-- 系統自動計算對比度確保可讀性
+- 系統自動計算對比度確保可讀性 (非必要)
 - 智能生成中性色階
-- 即時預覽主題效果
+- 即時預覽主題效果 (非必要)
 
 **預設主題配置**:
 
